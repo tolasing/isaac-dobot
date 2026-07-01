@@ -1,0 +1,80 @@
+# Base image
+ARG ISAACSIM_BASE_IMAGE_ARG
+ARG ISAACSIM_VERSION_ARG
+FROM ${ISAACSIM_BASE_IMAGE_ARG}:${ISAACSIM_VERSION_ARG} AS base
+ENV ISAACSIM_VERSION=${ISAACSIM_VERSION_ARG}
+
+# Set default RUN shell to bash
+SHELL ["/bin/bash", "-c"]
+
+LABEL description="Base Isaac Sim image for isaac-cobot. No Isaac Lab framework -- \
+this project drives the CR5 with raw Isaac Sim + cuRobo (see Dockerfile.curobo)."
+
+# Arguments
+ARG ISAACSIM_ROOT_PATH_ARG
+ENV ISAACSIM_ROOT_PATH=${ISAACSIM_ROOT_PATH_ARG}
+# Path where the repo is bind-mounted at runtime (see docker-compose.yaml).
+# Nothing is COPY'd into the image at build time -- there's no separate
+# framework to bake in ahead of the live repo.
+ARG DOCKER_ISAAC_COBOT_PATH_ARG
+ENV DOCKER_ISAAC_COBOT_PATH=${DOCKER_ISAAC_COBOT_PATH_ARG}
+ARG DOCKER_USER_HOME_ARG
+ENV DOCKER_USER_HOME=${DOCKER_USER_HOME_ARG}
+
+ENV LANG=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+
+USER root
+
+# Install dependencies and remove cache
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    libglib2.0-0 \
+    ncurses-term \
+    wget && \
+    apt -y autoremove && apt clean autoclean && \
+    rm -rf /var/lib/apt/lists/*
+
+# For volume-mount targets declared in docker-compose.yaml to exist before
+# the volumes are attached (same convention as upstream Isaac Lab tooling).
+RUN mkdir -p ${ISAACSIM_ROOT_PATH}/kit/cache && \
+    mkdir -p ${DOCKER_USER_HOME}/.cache/ov && \
+    mkdir -p ${DOCKER_USER_HOME}/.cache/pip && \
+    mkdir -p ${DOCKER_USER_HOME}/.cache/nvidia/GLCache && \
+    mkdir -p ${DOCKER_USER_HOME}/.nv/ComputeCache && \
+    mkdir -p ${DOCKER_USER_HOME}/.nvidia-omniverse/logs && \
+    mkdir -p ${DOCKER_USER_HOME}/.local/share/ov/data && \
+    mkdir -p ${DOCKER_USER_HOME}/Documents
+
+# For singularity usage, create NVIDIA binary placeholders
+RUN touch /bin/nvidia-smi && \
+    touch /bin/nvidia-debugdump && \
+    touch /bin/nvidia-persistenced && \
+    touch /bin/nvidia-cuda-mps-control && \
+    touch /bin/nvidia-cuda-mps-server && \
+    touch /etc/localtime && \
+    mkdir -p /var/run/nvidia-persistenced && \
+    touch /var/run/nvidia-persistenced/socket
+
+# Light Python deps used by this repo's config-loading scripts. Isaac Sim's
+# bundled python.sh already ships numpy/etc.
+RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
+    ${ISAACSIM_ROOT_PATH}/python.sh -m pip install pyyaml
+
+# Aliasing python/pip to Isaac Sim's bundled interpreter for convenience
+RUN echo "alias python=${ISAACSIM_ROOT_PATH}/python.sh" >> ${HOME}/.bashrc && \
+    echo "alias python3=${ISAACSIM_ROOT_PATH}/python.sh" >> ${HOME}/.bashrc && \
+    echo "alias pip='${ISAACSIM_ROOT_PATH}/python.sh -m pip'" >> ${HOME}/.bashrc && \
+    echo "alias pip3='${ISAACSIM_ROOT_PATH}/python.sh -m pip'" >> ${HOME}/.bashrc && \
+    echo "export TZ=$(date +%Z)" >> ${HOME}/.bashrc && \
+    echo "shopt -s histappend" >> /root/.bashrc && \
+    echo "PROMPT_COMMAND='history -a'" >> /root/.bashrc
+
+# Create the mount point for the live repo and mark it git-safe
+RUN mkdir -p ${DOCKER_ISAAC_COBOT_PATH} && \
+    git config --global --add safe.directory ${DOCKER_ISAAC_COBOT_PATH}
+
+WORKDIR ${DOCKER_ISAAC_COBOT_PATH}

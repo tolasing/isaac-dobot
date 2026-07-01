@@ -1,0 +1,113 @@
+# Extension fields reused between services.
+# https://docs.docker.com/compose/compose-file/compose-file-v3/#extension-fields
+x-default-isaac-cobot-volumes: &default-isaac-cobot-volumes
+  # Isaac Sim config/cache dirs -- see
+  # https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/install_faq.html#save-isaac-sim-configs-on-local-disk
+  - type: volume
+    source: isaac-cache-kit
+    target: ${DOCKER_ISAACSIM_ROOT_PATH}/kit/cache
+  - type: volume
+    source: isaac-cache-ov
+    target: ${DOCKER_USER_HOME}/.cache/ov
+  - type: volume
+    source: isaac-cache-pip
+    target: ${DOCKER_USER_HOME}/.cache/pip
+  - type: volume
+    source: isaac-cache-gl
+    target: ${DOCKER_USER_HOME}/.cache/nvidia/GLCache
+  - type: volume
+    source: isaac-cache-compute
+    target: ${DOCKER_USER_HOME}/.nv/ComputeCache
+  - type: volume
+    source: isaac-logs
+    target: ${DOCKER_USER_HOME}/.nvidia-omniverse/logs
+  - type: volume
+    source: isaac-carb-logs
+    target: ${DOCKER_ISAACSIM_ROOT_PATH}/kit/logs/Kit/Isaac-Sim
+  - type: volume
+    source: isaac-data
+    target: ${DOCKER_USER_HOME}/.local/share/ov/data
+  - type: volume
+    source: isaac-docs
+    target: ${DOCKER_USER_HOME}/Documents
+  # The whole repo, live -- there's no separate framework baked into the
+  # image ahead of it, so a single bind mount is enough.
+  - type: bind
+    source: ../
+    target: ${DOCKER_ISAAC_COBOT_PATH}
+  # Bash shell history, persisted on the host
+  - type: bind
+    source: .isaac-cobot-docker-history
+    target: ${DOCKER_USER_HOME}/.bash_history
+
+x-default-isaac-cobot-environment: &default-isaac-cobot-environment
+  - ISAACSIM_PATH=${DOCKER_ISAACSIM_ROOT_PATH}
+  - OMNI_KIT_ALLOW_ROOT=1
+
+x-default-isaac-cobot-deploy: &default-isaac-cobot-deploy
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [ gpu ]
+
+services:
+  # Plain Isaac Sim, no cuRobo. Enough for scene-building / URDF import.
+  isaac-cobot-base:
+    profiles: [ "base" ]
+    env_file: .env.base
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.base
+      args:
+        - ISAACSIM_BASE_IMAGE_ARG=${ISAACSIM_BASE_IMAGE}
+        - ISAACSIM_VERSION_ARG=${ISAACSIM_VERSION}
+        - ISAACSIM_ROOT_PATH_ARG=${DOCKER_ISAACSIM_ROOT_PATH}
+        - DOCKER_ISAAC_COBOT_PATH_ARG=${DOCKER_ISAAC_COBOT_PATH}
+        - DOCKER_USER_HOME_ARG=${DOCKER_USER_HOME}
+    image: isaac-cobot-base${DOCKER_NAME_SUFFIX-}
+    container_name: isaac-cobot-base${DOCKER_NAME_SUFFIX-}
+    environment: *default-isaac-cobot-environment
+    volumes: *default-isaac-cobot-volumes
+    network_mode: host
+    privileged: true
+    deploy: *default-isaac-cobot-deploy
+    entrypoint: bash
+    stdin_open: true
+    tty: true
+
+  # Adds cuRobo (pinned commit) on top of isaac-cobot-base. This is the
+  # profile used for IK / motion-gen and waypoint teach/playback.
+  isaac-cobot-curobo:
+    profiles: [ "curobo" ]
+    env_file:
+      - .env.base
+      - .env.curobo
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile.curobo
+      args:
+        - DOCKER_NAME_SUFFIX=${DOCKER_NAME_SUFFIX-}
+        - CUROBO_COMMIT_ARG=${CUROBO_COMMIT}
+    image: isaac-cobot-curobo${DOCKER_NAME_SUFFIX-}
+    container_name: isaac-cobot-curobo${DOCKER_NAME_SUFFIX-}
+    environment: *default-isaac-cobot-environment
+    volumes: *default-isaac-cobot-volumes
+    network_mode: host
+    privileged: true
+    deploy: *default-isaac-cobot-deploy
+    entrypoint: bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  isaac-cache-kit:
+  isaac-cache-ov:
+  isaac-cache-pip:
+  isaac-cache-gl:
+  isaac-cache-compute:
+  isaac-logs:
+  isaac-carb-logs:
+  isaac-data:
+  isaac-docs:

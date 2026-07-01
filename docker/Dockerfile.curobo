@@ -1,0 +1,70 @@
+# Adds cuRobo (pinned commit) on top of isaac-cobot-base.
+# build-essential/cmake/git are already present in isaac-cobot-base.
+#
+# Built and smoke-tested (torch + curobo import, CUDA available, tensors on
+# GPU) against a live RTX PRO 4000 Blackwell. TORCH_CUDA_ARCH_LIST is tuned
+# to that GPU -- adjust if deploying to different hardware.
+
+ARG DOCKER_NAME_SUFFIX=""
+FROM isaac-cobot-base${DOCKER_NAME_SUFFIX} AS curobo
+
+USER root
+
+# Detect Ubuntu version and install CUDA 12.8 via NVIDIA's network repo
+# (cuda-keyring). cuRobo compiles CUDA kernels at install time
+# (--no-build-isolation below), which needs nvcc present in the image.
+RUN set -euo pipefail && \
+    . /etc/os-release && \
+    case "$ID" in \
+      ubuntu) \
+        case "$VERSION_ID" in \
+          "20.04") cuda_repo="ubuntu2004";; \
+          "22.04") cuda_repo="ubuntu2204";; \
+          "24.04") cuda_repo="ubuntu2404";; \
+          *) echo "Unsupported Ubuntu $VERSION_ID"; exit 1;; \
+        esac ;; \
+      *) echo "Unsupported base OS: $ID"; exit 1 ;; \
+    esac && \
+    apt-get update && apt-get install -y --no-install-recommends wget gnupg ca-certificates && \
+    wget -q https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i cuda-keyring_1.1-1_all.deb && \
+    rm -f cuda-keyring_1.1-1_all.deb && \
+    wget -q https://developer.download.nvidia.com/compute/cuda/repos/${cuda_repo}/x86_64/cuda-${cuda_repo}.pin && \
+    mv cuda-${cuda_repo}.pin /etc/apt/preferences.d/cuda-repository-pin-600 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        cuda-toolkit-12-8 \
+        libcudnn9-cuda-12 \
+        libcusparselt0 \
+        libnccl2 \
+        libnccl-dev \
+        libnvjitlink-12-8 && \
+    apt-get -y autoremove && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV CUDA_HOME=/usr/local/cuda-12.8
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+# 12.0 targets Blackwell (verified against the actual dev workstation GPU:
+# an RTX PRO 4000 Blackwell, sm_120). +PTX keeps other architectures
+# working via JIT. Adjust if deploying to different hardware.
+ENV TORCH_CUDA_ARCH_LIST=12.0+PTX
+
+# Isaac Sim ships its own torch under omni.isaac.ml_archive/pip_prebundle/,
+# which python.sh's sys.path resolves BEFORE site-packages. Left in place,
+# `import torch` picks up that bundled copy instead of the one installed
+# below, and crashes on a vendored-packaging submodule mismatch between the
+# two (found by actually running this image against a live GPU).
+RUN rm -rf ${ISAACSIM_ROOT_PATH}/exts/omni.isaac.ml_archive/pip_prebundle/torch*
+
+# Install a CUDA-12.8-matched torch build. cuRobo needs torch present
+# before its own install step below.
+RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
+    ${ISAACSIM_ROOT_PATH}/python.sh -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+# Install cuRobo from source, pinned to the commit recorded in .env.curobo.
+ARG CUROBO_COMMIT_ARG
+RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
+    ${ISAACSIM_ROOT_PATH}/python.sh -m pip install --no-build-isolation \
+    "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@${CUROBO_COMMIT_ARG}"
+
+WORKDIR ${DOCKER_ISAAC_COBOT_PATH}

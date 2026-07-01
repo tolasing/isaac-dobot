@@ -1,0 +1,53 @@
+# First-draft cuRobo collision spheres for the CR5, one entry per
+# collision_link_names entry in cr5.yml. Sphere centers are in each link's
+# own local frame (matching cuRobo's convention), roughly proportioned
+# using the joint offsets from the vendored URDF (see the origin xyz of
+# joint1..joint6 in ../../robots/cr5/urdf/cr5_robot.urdf) -- NOT fit to the
+# actual collision mesh geometry. Treat these as a rough placeholder to be
+# tuned (e.g. with cuRobo's sphere-fitting tools) before relying on them
+# for real collision avoidance.
+
+collision_spheres:
+  base_link:
+    - center: [0.0, 0.0, 0.05]
+      radius: 0.09
+    - center: [0.0, 0.0, 0.13]
+      radius: 0.08
+
+  Link1:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.09
+
+  Link2:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.08
+    - center: [-0.21, 0.0, 0.0]
+      radius: 0.075
+    - center: [-0.427, 0.0, 0.0]
+      radius: 0.07
+
+  Link3:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.075
+    - center: [-0.18, 0.0, 0.07]
+      radius: 0.07
+    - center: [-0.357, 0.0, 0.141]
+      radius: 0.065
+
+  Link4:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.06
+    - center: [0.0, -0.116, 0.0]
+      radius: 0.055
+
+  Link5:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.055
+    - center: [0.0, 0.105, 0.0]
+      radius: 0.05
+
+  Link6:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.05
+    - center: [0.0, 0.0, 0.03]
+      radius: 0.04

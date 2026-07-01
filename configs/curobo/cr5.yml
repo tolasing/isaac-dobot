@@ -1,0 +1,111 @@
+# cuRobo robot config for the Dobot CR5, following cuRobo's standard
+# robot_cfg.kinematics schema (see e.g. cuRobo's bundled ur5e.yml for a
+# comparable 6-DOF industrial-arm reference).
+#
+# FIRST DRAFT / IN PROGRESS: two real bugs below were found and fixed by
+# testing MotionGenConfig.load_from_robot_config() directly against the
+# pinned cuRobo commit (../../docker/.env.curobo, real GPU) and
+# introspecting the installed
+# curobo.cuda_robot_model.cuda_robot_generator.CudaRobotGeneratorConfig --
+# config *loading* now works (see scripts/build_scene.py's
+# setup_curobo_motion_gen(), which applies the path-patching described in
+# bug 2 below for its own CR5 fallback branch and has been exercised for
+# the Franka case it defaults to -- NOT yet exercised for the CR5 branch
+# specifically). scripts/setup_curobo.py still passes this file's path
+# directly to MotionGenConfig.load_from_robot_config() without that
+# patching and will hit bug 2 below if run as-is; it hasn't been updated.
+#   1. `joint_limits` (removed, see below) isn't a valid key at all in this
+#      cuRobo version -- it derives joint position limits directly from
+#      the URDF, with no override field. The original KNOWN GAP guess (a
+#      velocity/effort override key) didn't exist; the actual problem was
+#      simpler (an invalid key causing a TypeError on load).
+#   2. `urdf_path`/`asset_root_path`/`collision_spheres` below are repo-
+#      root-relative for readability and to match tests/test_configs.py's
+#      convention, but cuRobo's own loader (cuda_robot_generator.py)
+#      ALWAYS joins urdf_path/asset_root_path against
+#      `curobo.util_file.get_assets_path()`, and collision_spheres against
+#      `get_robot_configs_path()` (both cuRobo's own bundled dirs) unless
+#      the caller resolves them to absolute paths first -- there's no
+#      repo-relative resolution built in. Any script loading this config
+#      MUST patch all three to absolute paths (e.g. via REPO_ROOT) before
+#      passing the dict to MotionGenConfig.load_from_robot_config(), or
+#      cuRobo will silently look inside its own install instead of this
+#      repo.
+#
+# The CR5 URDF's `effort="0" velocity="0"` joints (a SolidWorks-exporter
+# artifact, see ../../robots/cr5/SOURCE.md) turned out not to block cuRobo
+# loading at all -- cuRobo's kinematics parsing doesn't appear to reject
+# zero velocity/effort the way it might have been expected to. That's
+# still worked around separately for the *Isaac Sim articulation drive* at
+# import time (URDFImporterConfig(default_drive_strength=1e5), see
+# ../../scripts/import_cr5.py) -- a different concern (holding a
+# commanded pose in sim) from cuRobo's own motion-gen math.
+
+robot_cfg:
+  kinematics:
+    urdf_path: "robots/cr5/urdf/cr5_robot.urdf"
+    asset_root_path: "robots/cr5"
+
+    base_link: "base_link"
+    ee_link: "Link6"
+
+    collision_link_names:
+      - "base_link"
+      - "Link1"
+      - "Link2"
+      - "Link3"
+      - "Link4"
+      - "Link5"
+      - "Link6"
+    collision_spheres: "cr5_collision_spheres.yml"
+    collision_sphere_buffer: 0.005
+    self_collision_ignore:
+      base_link: ["Link1"]
+      Link1: ["Link2"]
+      Link2: ["Link3"]
+      Link3: ["Link4"]
+      Link4: ["Link5"]
+      Link5: ["Link6"]
+    self_collision_buffer:
+      base_link: 0.0
+      Link1: 0.0
+      Link2: 0.0
+      Link3: 0.0
+      Link4: 0.0
+      Link5: 0.0
+      Link6: 0.0
+
+    use_global_cumul: true
+    mesh_link_names:
+      - "base_link"
+      - "Link1"
+      - "Link2"
+      - "Link3"
+      - "Link4"
+      - "Link5"
+      - "Link6"
+
+    cspace:
+      joint_names:
+        - "joint1"
+        - "joint2"
+        - "joint3"
+        - "joint4"
+        - "joint5"
+        - "joint6"
+      # All-zeros home pose -- a safe default since no real "ready" pose
+      # has been taught yet. Replace once a known-good retract pose exists.
+      retract_config: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      # Placeholder motion-gen limits, not sourced from the CR5 datasheet
+      # yet -- see the module-level comment above.
+      max_jerk: 500.0
+      max_acceleration: 15.0
+
+    # No `joint_limits` override key here -- cuRobo has no such field (see
+    # the module-level comment above); it reads joint position limits
+    # directly from the URDF. tests/test_configs.py's
+    # test_curobo_joint_limits_match_urdf, which used to check a
+    # `joint_limits` block here against the URDF, was removed for the same
+    # reason -- there's nothing left to drift out of sync.

@@ -1,0 +1,187 @@
+# L-shaped assembly table + CR5 mount pose.
+#
+# Units: meters, radians. Z-up, matching Isaac Sim's default new-stage
+# convention. Consumed by scripts/build_scene.py.
+#
+# First draft -- dimensions are reasonable placeholders for a small
+# assembly cell, not yet measured against a real table. Adjust to match
+# actual hardware before treating any of this as load-bearing.
+
+factory:
+  # A real factory-floor scene (factory shell, Kuka arm, car lift, safety
+  # gates, part racks) vendored from NVIDIA's USD Explorer Sample Assets
+  # Pack -- not one of Isaac Sim's bundled warehouse environments. Path is
+  # relative to the repo root. See assets/factory/SOURCE.md for provenance,
+  # license terms, and how to re-fetch it (not committed to git -- ~404MB).
+  backdrop_usd: "assets/factory/Factory.usd"
+  prim_path: /World/Factory
+
+  # Case-insensitive *prefix* match against prim names under /World/Factory
+  # -- matching prims are deactivated (not deleted) by
+  # scripts/build_scene.py's prune_factory_dressing(). Each entry below was
+  # confirmed by selecting the actual prim in the Isaac Sim GUI (Property
+  # panel's Prim Path), not guessed from SubUSDs filenames:
+  #   - Rail: the welding line's sliding rail, under
+  #     /World/Factory/Samples/Welding_Assembly_Animated_Adjust/.../root
+  #   - RobotPedestal_ (trailing underscore, NOT the bare "RobotPedestal"):
+  #     the duplicate numbered pedestals under that same root. The one bare
+  #     `RobotPedestal` is deliberately excluded from this prefix match --
+  #     it's reused as the CR5's own pedestal (see cr5_mount.pedestal
+  #     below) instead of being deactivated.
+  #   - Pedestal_plates: the flat metal plates scattered across
+  #     /World/Factory/Stage that render as if floating. Deliberately NOT
+  #     the bare prefix "Pedestal" -- that would also catch
+  #     Pedestal_Export/Pedestal_Adjust (a separate, unconfirmed asset --
+  #     possibly the "computer table" prop -- that hasn't been asked to be
+  #     removed).
+  # Prefix (not substring) matching deliberately avoids also catching
+  # unrelated prims like a `Handrail`/`GuardRail` elsewhere in the factory.
+  # Everything else (fences, feeders, process nodes, roof racks, robot
+  # controllers/arms, ErgoTable, part racks, etc.) is left active.
+  prune_name_startswith:
+    - Rail
+    - RobotPedestal_
+    - Pedestal_plates
+
+  # Exact prim paths (not name-prefix matches) to deactivate. Used instead
+  # of factory.prune_name_startswith when the prim's own name is too
+  # generic to safely prefix-match anywhere under /World/Factory --
+  # e.g. "Link1" also names our own CR5's first arm link, and possibly
+  # other robots' links elsewhere in the vendored scene.
+  #   - RobotPedestal/Link1: the leftover KUKA welding-robot arm mesh still
+  #     attached to the reused RobotPedestal (see cr5_mount.pedestal
+  #     below) -- the pedestal is reused only as a stand; the CR5's own
+  #     URDF-imported arm sits on top of it instead.
+  #   - ErgoTable/Keyboard, ErgoTable/Monitor, ErgoTable/Monitor_U20__U23_2:
+  #     the computer peripherals on the vendored ErgoTable desk (see
+  #     ergo_tables below) -- deactivated on the source prim before it's
+  #     copied, so neither copy carries them either. We only want the bare
+  #     work surface for holding assembly parts.
+  #   - RobotController, Roof_I10, sledge, sledge_I1: found by scanning the
+  #     stage for prims with time-sampled attributes whose value actually
+  #     changes (not just an authored single-keyframe export artifact) --
+  #     these are the only three that survived that filter. RobotController
+  #     is a second, entirely separate KUKA arm (joint axes A1-A6 plus a
+  #     40-link cable-dressing chain) from the one on RobotPedestal, which
+  #     visibly moves once the Isaac Sim timeline is playing. sledge/
+  #     sledge_I1 are the car-body carrier fixture ("sledge"/"skid" is
+  #     automotive-line terminology) -- they fake motion along the line via
+  #     toggled visibility rather than real translation, which is what
+  #     reads as "the car chassis moving." Roof_I10 is a roof-mounted
+  #     component with animated orientation. None of this should run in a
+  #     static cobot-cell backdrop.
+  prune_exact_paths:
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/RobotPedestal/Link1
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/ErgoTable/Keyboard
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/ErgoTable/Monitor
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/ErgoTable/Monitor_U20__U23_2
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/RobotController
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/Process_U20_Node_U20__U23_5/Roof_I10
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/sledge
+    - /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/sledge_I1
+
+ergo_tables:
+  # Two work surfaces near the robot for holding assembly parts, reusing
+  # the vendored ErgoTable desk prop instead of a synthetic table (which
+  # never read as "a table" visually -- plain gray cuboids). Each instance
+  # is a *copy* of source_prim_path (CopyPrim, not a world-pose override in
+  # place like cr5_mount.pedestal): we need two independent instances, not
+  # one repositioned original, and CopyPrim duplicates the prim's
+  # composition arcs cleanly (unlike MovePrim, which left an empty shell
+  # when tried on this same kind of deeply-referenced prim -- see
+  # cr5_mount.pedestal's comment below for that finding).
+  source_prim_path: /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/ErgoTable
+  # Floor-level (z=0): ErgoTable's own origin is its floor-contact point,
+  # same as RobotPedestal's. Uniform scale-down: the vendored ErgoTable's
+  # native size read as oversized next to the robot/pedestal.
+  scale: [0.1, 0.1, 0.1]
+  # position_xy is WORLD position (meters) -- NOT the same number as the
+  # Property panel's local Translate field. /World/Factory carries an
+  # implicit x100 scale (it directly references the vendored Factory.usd,
+  # authored in centimeters, reconciled into this stage's meters
+  # convention), so a prim's local Translate relative to it reads 100x its
+  # world position -- confirmed empirically: setting world position to
+  # (226.912, -328.71) produced a local Translate of (22691.2, -32871.0)
+  # in the Property panel. These position_xy values are already divided by
+  # 100 from the raw Property panel numbers for that reason.
+  # orientation_wxyz is unaffected (rotation is scale-invariant) -- Euler
+  # XYZ degrees from the Property panel's Orient field, converted to
+  # quaternion via isaacsim.core.utils.rotations.euler_angles_to_quat.
+  instances:
+    - prim_path: /World/Factory/ErgoTable_1
+      position_xy: [2.26912, -3.2871]  # Property panel local Translate (22691.2, -32871.0) / 100
+      orientation_wxyz: [0.7117931640756937, 0.0, 0.0, -0.7023891311624295]  # Euler XYZ (0, 0, -89.238deg)
+    - prim_path: /World/Factory/ErgoTable_2
+      position_xy: [1.51329, -2.1244]  # Property panel local Translate (15132.9, -21244.0) / 100
+      orientation_wxyz: [1.0, 0.0, 0.0, 0.0]  # Euler (0, 0, 0deg) -- identity
+
+cr5_mount:
+  prim_path: /World/CR5
+  # World pose (parent /World has an identity transform, so world = local
+  # here) -- dialed in interactively in the GUI, no longer tied to the
+  # ergo tables/pedestal positions (see pedestal's own comment below: it's
+  # now placed independently too).
+  position: [1.45, -3.34, 0.77]
+  # Identity orientation (w, x, y, z); rotate here if the base needs to
+  # face a particular direction relative to the table segments.
+  orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+  # Non-uniform -- heads up: this scales the whole articulated chain,
+  # including joint offsets between links, not just each link's mesh.
+  # Worth checking visually in the GUI; anisotropic scale on a multi-link
+  # articulation can look distorted and PhysX doesn't always handle it
+  # cleanly on rigid bodies.
+  scale: [1.0, 1.0, 1.0]
+
+  # Without a pedestal underneath, the CR5 renders floating in place --
+  # URDF import with fix_base=True just pins the base at `position` with
+  # nothing underneath it. Rather than author a new synthetic stand, reuse
+  # the vendored `RobotPedestal` prim from the welding line (excluded from
+  # factory.prune_name_startswith above for this purpose). Overriding pose
+  # in place, NOT by moving/renaming the prim: RobotPedestal's actual mesh
+  # comes from nested `reference` composition arcs several levels deep in
+  # the vendored asset, and MovePrim on a prim like that leaves an empty
+  # shell behind (confirmed: the moved prim showed 0 children).
+  pedestal:
+    prim_path: /World/Factory/Samples/Welding_Assembly_Animated_Adjust/Welding_Assembly_Animated_Export/root/RobotPedestal
+    # LOCAL pose (not world -- unlike cr5_mount.position above), since
+    # RobotPedestal's parent chain has a large internal offset baked into
+    # the vendored asset (e.g. a sibling prim, Rail, sits at local
+    # Translate X=-11000). Dialed in interactively in the GUI and read
+    # back from the Property panel's Translate/Orient directly -- applied
+    # via SingleXFormPrim.set_local_pose(), NOT set_world_pose(), which
+    # would instead compute a *different* local transform needed to reach
+    # this number as a world position (wrong -- these values already
+    # *are* local). No longer derived from cr5_mount.position -- the
+    # pedestal is now positioned independently.
+    local_translation: [8222.12, 345.67, 0.0]
+    local_orientation_wxyz: [0.7071067811865475, 0.0, 0.0, 0.7071067811865475]  # Euler XYZ (0, 0, 90deg)
+    # Non-uniform scale-down: at native size the pedestal read as oversized
+    # next to the now-shrunk (0.1x) ergo tables. Not an articulated body
+    # like cr5_mount's robot, so anisotropic scale here is safe -- it's a
+    # single static mesh reference, no joint chain to distort.
+    scale: [0.5, 0.5, 0.8]
+
+  # TEMPORARY: mount cuRobo's own bundled, well-tuned Franka Panda instead
+  # of the CR5, to validate the whole pipeline (mount pose, pedestal,
+  # teleop via examples/curobo_reference/motion_gen_reacher.py, cuRobo
+  # motion-gen) before trusting the CR5's own not-yet-verified kinematics
+  # config (see configs/curobo/cr5.yml's KNOWN GAP note). Remove this block
+  # (or set enabled: false) to revert to importing the CR5's own URDF at
+  # robots/cr5/urdf/cr5_robot.urdf with its own drive tuning.
+  #
+  # urdf_relative_path is resolved at runtime via
+  # curobo.util_file.get_assets_path() + this path -- NOT a path in this
+  # repo. drive_strength/position_drive_damping are cuRobo's own tuned
+  # values for the Franka (see their examples/isaac_sim/helper.py), not a
+  # guess -- unlike the CR5's, which exist only to work around its URDF's
+  # degenerate effort="0" velocity="0" joints. motion_gen_robot_cfg is
+  # cuRobo's own bundled robot-config filename (resolved via
+  # curobo.util_file.get_robot_configs_path()) for building the matching
+  # MotionGen -- keeps the Isaac Sim import and the cuRobo kinematics using
+  # the same robot while this override is active.
+  robot_override:
+    enabled: true
+    urdf_relative_path: robot/franka_description/franka_panda.urdf
+    default_drive_strength: 1047.19751
+    default_position_drive_damping: 52.35988
+    motion_gen_robot_cfg: franka.yml

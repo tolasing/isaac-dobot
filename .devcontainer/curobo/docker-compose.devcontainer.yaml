@@ -1,0 +1,74 @@
+name: isaac-cobot-curobo-devcontainer
+
+services:
+  isaac-cobot-curobo:
+    image: isaac-cobot-curobo
+    container_name: isaac-cobot-curobo
+    environment:
+      - ISAACSIM_PATH=/isaac-sim
+      - OMNI_KIT_ALLOW_ROOT=1
+      - ACCEPT_EULA=Y
+      # X11 forwarding
+      - DISPLAY=${DISPLAY:-:0}
+      - XAUTHORITY=/root/.Xauthority
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - type: bind
+        source: ../../
+        target: /workspace/isaac-cobot
+      # X11 forwarding mounts
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+      - type: bind
+        source: /tmp/.docker.xauth
+        target: /root/.Xauthority
+      - type: volume
+        source: isaac-cache-kit
+        target: /isaac-sim/kit/cache
+      - type: volume
+        source: isaac-cache-ov
+        target: /root/.cache/ov
+      - type: volume
+        source: isaac-cache-pip
+        target: /root/.cache/pip
+      - type: volume
+        source: isaac-cache-gl
+        target: /root/.cache/nvidia/GLCache
+      - type: volume
+        source: isaac-cache-compute
+        target: /root/.nv/ComputeCache
+      - type: volume
+        source: isaac-logs
+        target: /root/.nvidia-omniverse/logs
+      - type: volume
+        source: isaac-carb-logs
+        target: /isaac-sim/kit/logs/Kit/Isaac-Sim
+      - type: volume
+        source: isaac-data
+        target: /root/.local/share/ov/data
+      - type: volume
+        source: isaac-docs
+        target: /root/Documents
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: bash
+    stdin_open: true
+    tty: true
+
+volumes:
+  isaac-cache-kit:
+  isaac-cache-ov:
+  isaac-cache-pip:
+  isaac-cache-gl:
+  isaac-cache-compute:
+  isaac-logs:
+  isaac-carb-logs:
+  isaac-data:
+  isaac-docs:

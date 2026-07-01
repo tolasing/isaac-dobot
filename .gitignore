@@ -12,8 +12,14 @@ venv/
 kit_cache/
 .nvidia-omniverse/
 
-# Docker devcontainer bash history bind-mount targets
-docker/.isaac-dobot-docker-history
+# Vendored third-party asset packs (too large for git) -- see each
+# directory's own SOURCE.md for provenance + how to re-fetch.
+assets/factory/*
+!assets/factory/SOURCE.md
+
+# Docker container.py runtime state
+docker/.container.cfg
+docker/.isaac-cobot-docker-history
 
 # Editors / OS
 .vscode/

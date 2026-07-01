@@ -47,7 +47,7 @@ class ContainerInterface:
                 Optional docker image and container name suffix.  Defaults to None, in which case, the docker name
                 suffix is set to the empty string. A hyphen is inserted in between the profile and the suffix if
                 the suffix is a nonempty string.  For example, if "base" is passed to profile, and "custom" is
-                passed to suffix, then the produced docker image and container will be named ``isaac-lab-base-custom``.
+                passed to suffix, then the produced docker image and container will be named ``isaac-cobot-base-custom``.
         """
         # set the context directory
         self.context_dir = context_dir
@@ -75,8 +75,8 @@ class ContainerInterface:
             self.suffix = f"-{suffix}"
 
         # set names for easier reference
-        self.base_service_name = "isaac-lab-base"
-        self.service_name = f"isaac-lab-{self.profile}"
+        self.base_service_name = "isaac-cobot-base"
+        self.service_name = f"isaac-cobot-{self.profile}"
         self.container_name = f"{self.service_name}{self.suffix}"
         self.image_name = f"{self.service_name}{self.suffix}:latest"
 
@@ -171,7 +171,7 @@ class ContainerInterface:
             " background...\n"
         )
         # Check if the container history file exists
-        container_history_file = self.context_dir / ".isaac-lab-docker-history"
+        container_history_file = self.context_dir / ".isaac-cobot-docker-history"
         if not container_history_file.exists():
             # Create the file with sticky bit on the group
             container_history_file.touch(mode=0o2644, exist_ok=True)
@@ -250,11 +250,15 @@ class ContainerInterface:
                 output_dir.mkdir()
 
             # define dictionary of mapping from docker container path to host machine path
-            docker_isaac_lab_path = Path(self.dot_vars["DOCKER_ISAACLAB_PATH"])
+            # NOTE: this "logs / docs / data_storage" layout is an Isaac Lab framework
+            # convention this repo doesn't use. Left in place since the mechanism
+            # (docker cp per path) is still generically useful; the artifact paths
+            # below just won't exist in an isaac-cobot container yet.
+            docker_isaac_cobot_path = Path(self.dot_vars["DOCKER_ISAAC_COBOT_PATH"])
             artifacts = {
-                docker_isaac_lab_path.joinpath("logs"): output_dir.joinpath("logs"),
-                docker_isaac_lab_path.joinpath("docs/_build"): output_dir.joinpath("docs"),
-                docker_isaac_lab_path.joinpath("data_storage"): output_dir.joinpath("data_storage"),
+                docker_isaac_cobot_path.joinpath("logs"): output_dir.joinpath("logs"),
+                docker_isaac_cobot_path.joinpath("docs/_build"): output_dir.joinpath("docs"),
+                docker_isaac_cobot_path.joinpath("data_storage"): output_dir.joinpath("data_storage"),
             }
             # print the artifacts to be copied
             for container_path, host_path in artifacts.items():

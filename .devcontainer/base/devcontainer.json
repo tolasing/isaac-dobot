@@ -1,0 +1,29 @@
+{
+  "name": "isaac-cobot — Base",
+  "dockerComposeFile": [
+    "docker-compose.devcontainer.yaml"
+  ],
+  "initializeCommand": "bash ${localWorkspaceFolder}/.devcontainer/base/build-images.sh",
+  "service": "isaac-cobot-base",
+  "workspaceFolder": "/workspace/isaac-cobot",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace/isaac-cobot,type=bind,consistency=cached"
+  ],
+  "postCreateCommand": "git config --global --add safe.directory /workspace/isaac-cobot",
+  "overrideCommand": false,
+  "shutdownAction": "stopCompose",
+  "remoteEnv": {
+    "ISAACSIM_PATH": "/isaac-sim",
+    "OMNI_KIT_ALLOW_ROOT": "1"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "anthropic.claude-code"
+      ]
+    }
+  }
+}
