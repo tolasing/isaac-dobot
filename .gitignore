@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Isaac Sim / Omniverse local caches (never commit these)
+*.usd.bak
+kit_cache/
+.nvidia-omniverse/
+
+# Docker devcontainer bash history bind-mount targets
+docker/.isaac-dobot-docker-history
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets - never commit tokens or env overrides
+.env
+.env.local
+*.token
