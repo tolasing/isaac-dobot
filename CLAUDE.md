@@ -18,21 +18,32 @@ illustrative, not validated against real hardware.
 
 ## Repo layout
 
+### Done
+
 - `robots/cr5/` — vendored CR5 URDF + meshes (MIT license, from
   `Dobot-Arm/TCP-IP-ROS-6AXis`; provenance in `robots/cr5/SOURCE.md`). Mesh
   URIs were rewritten from `package://dobot_description/...` to relative
   `../meshes/...` paths so the URDF resolves standalone.
-- `docker/`, `.devcontainer/` — Isaac Lab-style container tooling, adapted
-  from `tolasing/groot`. Two profiles:
-  - `base` — Isaac Sim + Isaac Lab only.
-  - `curobo` — adds the CUDA 12.8 toolchain + a pinned cuRobo build.
-- `configs/scene/` — L-table geometry and CR5 placement.
-- `configs/curobo/` — cuRobo robot config (`cr5.yml`) and collision spheres.
-- `configs/rmpflow/` — optional Lula/RMPflow config for live reactive
-  end-effector dragging (secondary to cuRobo waypoint planning).
-- `scripts/` — scene building, URDF import, cuRobo setup, waypoint
-  teach/playback.
+- `docker/.env.base` — Isaac Sim 5.1.0 image + path env vars.
+- `docker/.env.curobo` — pinned cuRobo commit hash.
+- `docker/container.py` — container management CLI (build/start/enter/stop).
+- `docker/utils/` — Isaac Lab BSD-3-Clause container tooling (vendored from
+  `tolasing/groot`): `ContainerInterface`, `StateFile`, `x11_utils`.
+
+### Pending (directories are scaffolding only — no files yet)
+
+- `docker/Dockerfile.base`, `Dockerfile.curobo`, `docker-compose.yaml` —
+  two-profile Docker setup (base and curobo).
+- `.devcontainer/base/` and `.devcontainer/curobo/` — VS Code devcontainer
+  configs for each profile.
+- `configs/scene/table_layout.yaml` — L-table geometry and CR5 placement.
+- `configs/curobo/cr5.yml` — cuRobo robot config; `cr5_collision_spheres.yml`.
+- `configs/rmpflow/` — optional Lula/RMPflow config.
+- `scripts/` — scene builder, URDF importer, cuRobo setup, waypoint
+  teach/playback scripts.
 - `data/waypoints/` — recorded waypoint JSON (joint-space, not Cartesian).
+- `README.md`, `LICENSE`, `pyproject.toml`, `.github/workflows/lint.yml`,
+  `tests/`.
 
 ## Conventions
 
