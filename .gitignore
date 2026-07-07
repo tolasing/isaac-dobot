@@ -17,13 +17,23 @@ kit_cache/
 assets/factory/*
 !assets/factory/SOURCE.md
 
+# Hand-authored scanner-assembly scene + vendor CAD source -- same
+# reasoning as assets/factory/ above (large, vendor-origin, no
+# established redistribution terms of their own).
+assets/mefron/*
+mantra scanner/*
+
 # Docker container.py runtime state
 docker/.container.cfg
 docker/.isaac-cobot-docker-history
 
+# Session scratch output -- never meant to be committed
+scratchpad/*
+
 # Editors / OS
 .vscode/
 .idea/
+.claude/
 .DS_Store
 Thumbs.db
 

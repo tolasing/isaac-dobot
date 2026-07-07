@@ -1,0 +1,78 @@
+# Mefron scanner-assembly cell -- Franka mounted on the pre-authored mount
+# plate in mefron.usd. Units: meters, radians, Z-up.
+
+factory:
+  # mefron.usd already includes its own factory backdrop, packing tables,
+  # and scanner-assembly CAD parts -- nothing here needs pruning, or an
+  # ergo-table/assembly-part reference like table_layout.yaml.
+  backdrop_usd: "assets/mefron/factory floor/mefron.usd"
+  prim_path: /World/Factory
+
+cr5_mount:
+  prim_path: /World/CR5
+  # The old Pedestal_plates/Cube_05 mount plate was removed from mefron.usd
+  # and replaced with a SEKTION table (/World/sektion_cabinet_instanceable
+  # in mefron.usd's own raw hierarchy). World position confirmed by manually
+  # placing a Franka copy on top of the table in the GUI and reading back
+  # its Translate/Orient from the Property panel -- not derived via a
+  # get_world_pose()/BBoxCache script this time, unlike the old pedestal
+  # value it replaces.
+  position: [2.74097, -4.782, 0.7924]
+  orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+  scale: [1.0, 1.0, 1.0]
+
+  # Used below only as an obstacle-scan entry, no repositioning needed --
+  # sektion_cabinet_instanceable is a /World sibling of Factory in
+  # mefron.usd's own raw hierarchy (like packing_table, finger_print_scanner,
+  # etc.), so it gets exactly one added /Factory prefix once referenced
+  # under this scene's own /World/Factory (see build_scene_mefron.py's own
+  # module comment on the nesting-by-one-level gotcha) -- not two, unlike
+  # the old Cube_05 path this replaces, which was nested inside mefron.usd's
+  # own internal Factory/Stage hierarchy.
+  mount_surface:
+    prim_path: /World/Factory/sektion_cabinet_instanceable
+
+  # cuRobo's own bundled, tuned Franka Panda -- validates the pipeline
+  # before trusting the CR5's own not-yet-verified kinematics config.
+  robot_override:
+    enabled: true
+    urdf_relative_path: robot/franka_description/franka_panda.urdf
+    default_drive_strength: 1047.19751
+    default_position_drive_damping: 52.35988
+    motion_gen_robot_cfg: franka.yml
+
+# Nearby scene objects within the Franka's reach envelope -- not the whole
+# /World/Factory backdrop.
+obstacle_prim_paths:
+  - /World/Factory/packing_table
+  - /World/Factory/packing_table_01
+  - /World/Factory/finger_print_scanner
+  - /World/Factory/main_holder
+  - /World/Factory/screen
+  - /World/Factory/backpanel_support
+
+# Objects that need a solid grip -- bound (in code, at scene-build time; see
+# build_scene_mefron.py's apply_gripper_friction()) to the same high-friction
+# physics material as the Franka's fingertips. Confirmed via a read-only
+# inspection of mefron.usd that neither this part nor the Franka's fingertips
+# had any physics material authored at all -- both sides of every grasp
+# contact were relying on PhysX's un-overridden engine default friction,
+# which is why grasps were slipping regardless of object mass.
+high_friction_prim_paths:
+  - /World/Factory/finger_print_scanner
+
+teleop_target:
+  prim_path: /World/target
+  # Robot's own retract_config end-effector pose, converted to world frame
+  # via cr5_mount.position -- guaranteed reachable, so the target starts
+  # coincident with the real end-effector. Carried forward algebraically
+  # when cr5_mount.position moved from the old pedestal to the new table
+  # (new_position = new cr5_mount.position + the same local offset this
+  # position had from the *old* cr5_mount.position: [0.110581, 0.0,
+  # 0.590712]) rather than re-derived from scratch -- valid only because
+  # cr5_mount.orientation_wxyz is unchanged (still identity); if the mount
+  # orientation ever changes, this needs recomputing properly, not shifted.
+  position: [2.851551, -4.782, 1.383112]
+  orientation_wxyz: [0.03820457682013512, -0.919264018535614, -0.3807716369628906, 0.09223400056362152]
+  pose_delta_threshold: 1.0e-3
+  static_joint_velocity_threshold: 0.5

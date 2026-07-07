@@ -248,13 +248,48 @@ illustrative, not validated against real hardware.
   variant is needed, write a separate script instead (see "Needs
   verification" below). **Verified it runs** on this install with two
   environment fixes: (1) the prebuilt `kinematics_fused_cu` kernel has a
-  torch ABI mismatch here, and cuRobo's JIT-compile fallback needs `ninja`,
-  which `Dockerfile.curobo` doesn't install — worth adding; (2) `pip` is
-  itself broken in this Isaac Sim install
+  torch ABI mismatch here, and cuRobo's JIT-compile fallback needs `ninja`
+  — **now fixed** via `apt-get install ninja-build` in `Dockerfile.curobo`
+  (see the Conventions entry above); (2) `pip` is itself broken in this
+  Isaac Sim install
   (`ModuleNotFoundError: No module named 'pip._vendor.packaging._structures'`),
   so `ninja` had to be fetched as a static binary instead of
   `pip install ninja` — anything relying on pip inside the container is
   currently dead and worth fixing separately.
+- `scripts/test_teleop_headless.py` — **verified**. Standalone headless
+  fake-drag verification for `build_scene.py`'s interactive teleop loop:
+  since `build_scene.py`'s own `main()` only calls `run_teleop_loop()` in
+  the non-`--headless` path, there was previously no way to exercise the
+  drag-follow logic without a live display. This script builds the full
+  scene via `build_scene.py`'s own functions (reused as a library, not
+  duplicated), then monkeypatches `target.get_world_pose()` to hold the
+  target's real starting pose long enough to clear
+  `_TELEOP_INIT_FRAMES`/`_TELEOP_SETTLE_FRAMES`, then jump to a second,
+  nearby pose — indistinguishable to `run_teleop_loop()` from a real drag.
+  **Verified headlessly**: `teleop plan_single success=True` and a real
+  `0.5630` rad joint-position delta. Two real bugs found and fixed:
+    - `run_teleop_loop()` (like `build_scene.main()`) references a
+      module-level `simulation_app` global inside `build_scene`'s own
+      namespace, only ever set there under `if __name__ == "__main__"` —
+      since this script is the one creating the real `SimulationApp` when
+      run standalone, it must assign `build_scene.simulation_app`
+      explicitly before calling `run_teleop_loop()`, or that name lookup
+      fails with `NameError`.
+    - Calling `timeline.play()` before `run_teleop_loop()` has been
+      *called* (which is where it defines `/physicsScene`, at its own
+      top) plays physics with no `PhysicsScene` prim on the stage yet —
+      confirmed live this corrupts PhysX's tensor simulationView, and
+      `run_teleop_loop()`'s own later `SingleArticulation(...)`
+      construction then crashes with `AttributeError: 'NoneType' object
+      has no attribute 'link_names'`, even though that's the *first*
+      `SingleArticulation` built in the whole process (ruled out via a
+      separate repro: holding a second one before calling
+      `run_teleop_loop()`, then `del`ing it first, still crashes the
+      same way — so it isn't specifically about *count*, just about
+      physics stepping with no scene at all). Fixed by defining
+      `/physicsScene` in this script too, before calling
+      `timeline.play()`, matching the order `run_teleop_loop()`'s own
+      internal guard already assumes.
 - `assembly_parts` in `table_layout.yaml` + `build_assembly_parts()` in
   `build_scene.py` — **verified**. References external assembly-part USD
   files (the `mantra scanner/` CAD, converted via the CAD Converter
@@ -323,8 +358,390 @@ illustrative, not validated against real hardware.
   than a cosmetic nice-to-have here: scene renders are intended as VLA
   training data, where color accuracy affects vision-language grounding
   and sim-to-real transfer, not just visual polish.
-- `scripts/` (remaining) — `setup_curobo.py`, `waypoints.py`,
-  `teach_waypoint.py`, `playback_waypoints.py`.
+- `assets/mefron/` — a second, separate hand-authored scene (its own
+  factory floor, two `packing_table`/`packing_table_01` copies, and a
+  scanner-assembly CAD mockup — `finger_print_scanner`, `main_holder`,
+  `screen`, `backpanel_support`), built directly in the Isaac Sim GUI
+  (not via this repo's own `table_layout.yaml` pipeline) as a second
+  target for the same Franka-teleop capability. `factory floor/mefron.usd`
+  is the top-level stage file (`defaultPrim=/World`, `metersPerUnit=1.0`
+  — no cm/m mismatch to work around, unlike `assets/factory/Factory.usd`).
+  Untracked in git (like `assets/factory/`). **Real, non-obvious finding**:
+  importing a robot into this file *while it's opened directly*
+  (`omni.usd.get_context().open_stage()`, not referenced in) makes Isaac
+  Sim's URDF importer write a disk-persisted, multi-layer "Robot
+  Description" structure under `factory floor/configuration/` (a multi-MB
+  `mefron_base.usd` plus smaller `mefron_physics.usd`/`mefron_sensor.usd`/
+  `mefron_robot.usd` sublayers) — confirmed via the importer's own log
+  line ("Creating Asset in an in-memory stage, will not create layered
+  structure") that this behavior is conditional on the stage having a
+  real, file-backed root layer; it never happens for `build_scene.py`'s
+  own anonymous, in-memory stage. This write happens automatically, with
+  no save prompt, every time the import runs (script or manual GUI import)
+  — confirmed via file mtimes. Now gitignored (`assets/mefron/*` in
+  `.gitignore`, same treatment as `assets/factory/`) — it's a large
+  (~23MB), hand-authored, vendor-origin asset pack with no established
+  redistribution terms of its own, same reasoning as `assets/factory/`.
+  **Correction to an earlier claim in this file**: `mefron.usd`'s own
+  *saved* root layer was believed still pristine (`stage.Save()` is never
+  called by any script here) based on an earlier session's
+  `Sdf.Layer.FindOrOpen()` check — but a `/panda` prim spec is confirmed
+  **still present** in the file's saved root layer as of the session that
+  did `scripts/mefron.py`'s T_H_S/T_S_G/Step-6 work (below): every fresh
+  `open_stage()` of this file, from a brand-new process, immediately emits
+  `Could not open asset .../configuration/mefron_*.usd for payload
+  introduced by .../mefron.usd</panda{...}>` warnings — before any script
+  code runs, so this can only be coming from the file itself, not
+  something a script wrote in-memory this run. Not a live bug (these are
+  non-fatal warnings, not the "layer already exists" crash a *corrupted*
+  configuration file causes — see `clear_stale_robot_configuration()`
+  below for that distinct issue), but the file does need a manual GUI
+  fix (open `mefron.usd`, delete `/panda`, save) to actually clean up —
+  no script here calls `stage.Save()`, so nothing here can fix this from
+  code.
+- `scripts/mefron.py` — a standalone script (does not import
+  `build_scene.py`) that mounts cuRobo's bundled Franka Panda onto
+  `assets/mefron/`'s pre-authored SEKTION-cabinet mount plate
+  (`/World/sektion_cabinet_instanceable`, world position
+  `[2.74097, -4.782, 0.7924]` — same value `mefron_layout.yaml`'s
+  `cr5_mount.position` already uses; **corrected** from an earlier,
+  now-stale mount at `/World/Factory/Stage/Pedestal_plates/Cube_05` /
+  `(2.2025, -4.5025, 1.0018)`, which no longer exists after the
+  pedestal-to-SEKTION-table remount documented under
+  `configs/scene/mefron_layout.yaml` below), runs the same drag-follow
+  teleop loop as `build_scene.py`, and (new) provides a scalable
+  pick-and-place assembly capability — pressing **G**/**P** snaps the
+  teleop target to a live-computed grasp-approach or assembly-placement
+  pose for `finger_print_scanner`/`main_holder`, recomputed from their
+  *current* world poses every time, not baked in once. Opens `mefron.usd`
+  directly via `open_stage()`. **Superseded by `scripts/build_scene_mefron.py`
+  below** for the base teleop capability (see that entry for why), but
+  kept working and documented since it's the only script that can host
+  `mefron.usd` reparenting operations `build_scene_mefron.py`'s
+  referenced-stage session can't (see the T_H_S finding below) — has its
+  own real, confirmed findings:
+    - `build_teleop_target()`'s usual `CopyPrim`-based ghost target
+      (copied from `build_scene.py`) produced a prim with a **completely
+      empty bounding box** here (confirmed via `UsdGeom.BBoxCache`) — a
+      real break, not the harmless instance-proxy quirk `build_scene.py`'s
+      own version documents. Root cause: the `configuration/`
+      multi-layer structure (see `assets/mefron/`'s entry above) means the
+      source prim's visuals are composed across several layers, and
+      `CopyPrim`'s shallow, spec-level copy can't correctly re-resolve a
+      same-layer reference once relocated to a new prim path outside that
+      layer stack. Confirmed this isn't fixable via
+      `stage.SetEditTarget()` beforehand — the importer resets the edit
+      target itself regardless of what it was set to. Fixed by replacing
+      `CopyPrim` with an **internal USD reference**
+      (`prim.GetReferences().AddInternalReference()`) — a live pointer at
+      the already-*composed* result rather than a copy of raw specs, so
+      it renders correctly no matter how many layers underlie the source.
+      Confirmed live: non-empty bbox with real, plausible gripper-mesh
+      extents.
+    - `mefron.usd` already has its own hand-authored `/PhysicsScene`
+      (capitalized, at stage root). `run_teleop_loop()`'s ported-from-
+      `build_scene.py` physics-scene check only ever looks for the exact
+      lowercase path `/physicsScene` and creates one unconditionally if
+      that's missing — it has no way to know about the differently-named
+      one already on the stage, so it creates a second, redundant scene.
+      Confirmed live that having both active simultaneously breaks the
+      robot's PhysX articulation view entirely:
+      `isaacsim.core.prims.impl.articulation` logs "Physics Simulation
+      View is not created yet" forever, `get_joints_state()` never
+      returns non-`None`, and the robot never responds to the target no
+      matter how long you wait. Fixed here by deactivating (not deleting
+      — reversible, in-memory only, never touches the file on disk) the
+      pre-existing `/PhysicsScene` right after opening the stage, so
+      `run_teleop_loop()`'s own check finds neither path valid and
+      creates exactly one canonical `/physicsScene` itself.
+    - Calling `timeline.play()` before cuRobo's ~30s blocking
+      `motion_gen.warmup()` (which calls no `simulation_app.update()` of
+      its own) leaves physics "playing" across a long unpumped real-time
+      gap — confirmed live this corrupts PhysX's tensor simulationView by
+      the time the drag loop's own `SingleArticulation` gets constructed,
+      crashing with the same `AttributeError: 'NoneType' object has no
+      attribute 'link_names'` as `test_teleop_headless.py`'s analogous
+      bug above. Fixed by never calling `timeline.play()` in this script
+      at all — matching `build_scene.py`'s own convention, a human clicks
+      Play in the GUI, and `run_teleop_loop()` already waits for
+      `is_playing()` itself.
+    - Clicking **Stop** in the GUI tears down PhysX's simulation view
+      entirely — confirmed live that a `SingleArticulation` built before
+      the Stop is left pointing at that now-destroyed view, and reusing
+      it after a later Play produces the same endless "Physics Simulation
+      View is not created yet" symptom, permanently (the robot never
+      responds again for the rest of that process). The original
+      `run_teleop_loop()` pattern (ported from `build_scene.py`) only
+      ever builds its `SingleArticulation` once, gated by `idx_list is
+      None`, checked just on the very first Play — it has no path to
+      rebuild it on a *later* Play. This is a latent bug in
+      `build_scene.py`'s own `run_teleop_loop()` too (not fixed there,
+      since it was never exercised there via a real Stop→Play GUI cycle —
+      see "Needs verification" below), just discovered here first. Fixed
+      in this file by tracking not-playing→playing transitions and
+      rebuilding `robot`/`idx_list`/`articulation_controller` (and
+      resetting all other per-session state) on *every* fresh Play, not
+      just the first. **Verified live**, not just "doesn't crash": a
+      scripted test drove a fake drag (`plan_single success=True`,
+      `0.29m` real end-effector movement), then called
+      `timeline.stop()`/`timeline.play()` again in the same process and
+      drove a second fake drag — `plan_single success=True` again, `0.34m`
+      movement — proving the rebuild-on-replay logic actually works, not
+      just that it avoids a crash.
+    - **A corrupted-`configuration/`-file crash was found and fixed at the
+      source.** A previous crash left truncated
+      `configuration/mefron_{base,physics,robot,sensor}.usd` stub files on
+      disk (see `assets/mefron/`'s own entry above for why the URDF
+      importer writes these for a file-backed stage at all) — these broke
+      every subsequent import into `mefron.usd` the same way, forever,
+      since USD caches `Sdf.Layer` objects by identifier and a truncated
+      file makes `open_stage()` itself crash with "a layer already
+      exists" while resolving `/panda`'s broken payload references,
+      before any script code even runs. `clear_stale_robot_configuration()`
+      deletes any pre-existing files under that directory — but it must
+      run **before** `open_stage()`, not after: the first version of this
+      fix ran it after and still crashed, since USD had already cached the
+      broken `Sdf.Layer` objects while opening the stage, and deleting the
+      files off disk afterward doesn't invalidate that cache.
+    - **Grasp-physics and trajectory-pacing parity, ported from
+      `build_scene_mefron.py`.** This file had none of
+      `build_scene_mefron.py`'s already-fixed grip/motion bugs — added
+      `GripperKeyboardControl` (C/O keys), a gripper friction material
+      (`GRIPPER_STATIC_FRICTION=0.9`/`GRIPPER_DYNAMIC_FRICTION=0.8` on
+      `/World/finger_print_scanner`), a stiffened finger drive
+      (`GRIPPER_DRIVE_STIFFNESS=10000.0`), and `interpolation_dt`-gated
+      trajectory playback (real elapsed time via `time.time()`, not one
+      waypoint per render frame — see `build_scene_mefron.py`'s own entry
+      for the FPS-vs-`interpolation_dt` mechanism this fixes). Ported as
+      duplicated logic, not shared code, matching this file's own
+      established convention of not importing `build_scene_mefron.py`
+      (different stage types).
+    - **`robot.initialize()` crashed with `AttributeError: 'NoneType'
+      object has no attribute 'create_articulation_view'`, even after a
+      settle-frame delay and a forced post-warmup `timeline.stop()`.**
+      Root cause, confirmed by reading `isaacsim.core.simulation_manager`'s
+      actual source rather than guessing further:
+      `SingleArticulation.initialize()` depends on
+      `SimulationManager.get_physics_sim_view()`, which is only ever set
+      via one specific chain — timeline PLAY event → `_warm_start()` →
+      gated behind the carb setting `/app/player/playSimulations` → if
+      true, `initialize_physics()` → dispatches `PHYSICS_WARMUP` →
+      `_create_simulation_view()` actually sets the view. That setting is
+      a real, user-facing toggle in the Play button's own toolbar dropdown
+      (alongside Play Animations/Audio/Computegraph) — if it's off,
+      `timeline.is_playing()` still correctly returns `True`, but the
+      simulation view never gets created, and no amount of Play-timing or
+      settle frames fixes it. Fixed by forcing it on explicitly at the top
+      of `main()`:
+      `carb.settings.get_settings().set_bool("/app/player/playSimulations", True)`.
+      Confirmed via a new headless regression test (see
+      `scripts/test_mefron_teleop_headless.py` below).
+    - **T_H_S (`finger_print_scanner`'s pose relative to `main_holder` at
+      the correctly assembled position) was derived live, in this
+      script's own session, by script — not by hand.** This file opening
+      `mefron.usd` directly (rather than referencing it in, like
+      `build_scene_mefron.py` does) is what makes this possible at all:
+      temporarily reparenting `finger_print_scanner` under `main_holder`
+      in the Stage tree to dial in exact visual alignment hits a "Cannot
+      move/rename ancestral prim" restriction in
+      `build_scene_mefron.py`'s referenced-stage session, confirmed live,
+      but works natively here since `mefron.usd` is the real edit target.
+      Once aligned by hand in the GUI, the relative transform was computed
+      from both prims' resulting **world poses** via a new
+      `compute_relative_pose()` helper (uses
+      `isaacsim.core.utils.numpy.rotations.quats_to_rot_matrices`/
+      `rot_matrices_to_quats` — confirmed via direct source read to be
+      **scalar-first, wxyz**), not hand Euler-angle conversion — hand
+      conversion is what produced a confirmed-wrong rotation earlier in
+      this same investigation, for an unrelated pose. Result, now a
+      module constant:
+      `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]` =
+      `local_position=[-0.05765023, 0.02069006, 0.01875005]`,
+      `local_orientation_wxyz=[0.999973595, -0.00618904850,
+      0.000842160478, -0.00371422408]`.
+    - **The official `isaacsim.robot_setup.grasp_editor` tool (`GraspSpec`)
+      was tried first for T_S_G (the gripper's grasp pose relative to
+      `finger_print_scanner`) and found fundamentally unusable for this
+      exact Franka+`mefron.usd` combination — abandoned, not worked
+      around.** Its "Select Frames of Reference" dropdown came back
+      permanently empty, and its separate Joint Settings panel crashed
+      outright with `AttributeError: 'NoneType' object has no attribute
+      'is_active'`. Two wrong hypotheses were ruled out live first: not a
+      UI refresh-timing issue (retyping the filter field didn't help), and
+      not a dual-`SingleArticulation` ownership conflict with this
+      script's own running teleop loop (built a separate scene with no
+      teleop loop or cuRobo running at all, `scripts/
+      mefron_grasp_editor_scene.py` below — dropdown was still empty).
+      **Actual confirmed root cause**, found via a direct diagnostic
+      script that bypassed the Grasp Editor UI entirely: the Franka's own
+      articulation/DOF resolution works fine (`dof_names` populates
+      correctly, matching that the SEKTION cabinet's identical-mechanism
+      articulation also works) but `Usd.PrimRange(art.prim)` — which the
+      Grasp Editor's own dropdown-population code uses — finds **zero**
+      Xformable descendants under the Franka. Traced to the URDF
+      importer's file-backed-stage "layered Robot Description" mechanism
+      (see `assets/mefron/`'s own entry above) producing genuinely broken
+      internal cross-references for this specific Franka in this specific
+      file, confirmed via persistent "Could not open asset"/"Unresolved
+      reference prim path" warnings on every fresh, freshly-cleared
+      import — not just after a crash.
+    - **T_S_G was derived the same way as T_H_S instead** — via
+      `compute_relative_pose()` on the Franka's `ee_link` and
+      `finger_print_scanner`'s live world poses at a manually-jogged,
+      visually-confirmed good grasp, not via the Grasp Editor. Confirmed
+      the result is a real, physically-sensible transform, not a
+      derivation error: its near-1 component landed in the *last* slot
+      (`w≈0.99999`) rather than the first, initially looking suspicious
+      next to T_H_S's own result — double-checked directly against
+      `isaacsim/core/utils/numpy/rotations.py`'s own source (not assumed)
+      and confirmed `rot_matrices_to_quats` really is scalar-first,
+      confirming this is a legitimate ~180-degree rotation about the
+      scanner's own local Z axis (the gripper approaches from above; the
+      scanner's CAD-authored local frame has its own flipped axis
+      convention relative to that approach direction), not a bug. Result,
+      now module constants: `GRASP_OFFSET_POSITION=[0.01277519,
+      -0.02169126, -0.02863107]`,
+      `GRASP_OFFSET_ORIENTATION_WXYZ=[-0.000518294608, -0.00348700255,
+      0.000751325308, 0.999993504]`. `scripts/franka_grasp_editor_scene.py`/
+      `scripts/mefron_grasp_editor_scene.py` (below) remain in the repo as
+      working diagnostic artifacts for future parts, in case the Grasp
+      Editor is worth retrying against a from-scratch stage for a
+      robot/asset combination that doesn't hit this same layered-import
+      bug.
+    - **Step 6: wired T_H_S/T_S_G into two new pose functions and two new
+      keybindings, table-position-independent by construction.**
+      `compute_grasp_approach_pose()`/`compute_assembly_grasp_target()`
+      each re-read the live world pose of `finger_print_scanner`/
+      `main_holder` on every call and compose it with the fixed relative
+      transforms above via a new `compute_dependent_world_pose()` helper
+      (the forward direction of `compute_relative_pose()`), so neither
+      function depends on where the parts happened to be sitting when
+      T_H_S/T_S_G were derived. `GripperKeyboardControl` gained two
+      one-shot request/consume method pairs
+      (`request_grasp_approach()`/`consume_grasp_approach_request()`, and
+      the `_assembly_target` equivalents) wired to new **G**/**P** keys in
+      `build_gripper_keyboard_control()`. **Real bug found and fixed,
+      caught by a headless regression test rather than assumed working**:
+      the first version placed the G/P snap-consumption block *before*
+      `run_teleop_loop()`'s own `past_pose`/`target_pose is None`
+      bootstrap block. On the very first eligible frame of a call where a
+      request was already pending (the exact scenario a caller pre-arming
+      a request before the loop even starts produces), the snap fired
+      first, so `target.get_world_pose()` read back the *already-snapped*
+      pose, and `target_pose` got bootstrapped from that same post-snap
+      value — making the debounce's `norm(cube_position - target_pose)`
+      distance check exactly zero, forever, for that entire call. The snap
+      itself worked (the target prim really did move), but
+      `motion_gen.plan_single()` was never even called — confirmed via a
+      headless test (`scripts/test_mefron_assembly_headless.py` below)
+      whose pose-sanity checks passed (grasp-approach/assembly-target
+      poses both landed a plausible ~4-5cm from their reference objects)
+      while its full run produced **zero** occurrences of the
+      `"plan_single"` log line across ~280 frames per phase — comfortably
+      enough for the debounce to have fired if the condition could ever
+      become true. Three independent agents adversarially re-derived this
+      exact root cause from the live code (not from this write-up) before
+      the fix was applied, and all three converged on the same diagnosis
+      and fix. Fixed by moving the bootstrap block to run first (seeding
+      the baseline from the true pre-snap pose), then applying the snap
+      and reassigning the local `cube_position`/`cube_orientation` to the
+      post-snap values so the rest of that frame's logic (the debounce
+      check, and the trailing `past_pose`/`past_orientation` update) sees
+      the fresh pose. **Verified live** after the fix: `plan_single
+      success=True` for both phases, with real joint-position deltas
+      (`1.8159` rad for the grasp-approach move, `0.6809` rad more for the
+      subsequent assembly-placement move).
+- `scripts/test_mefron_teleop_headless.py` — headless regression test for
+  `mefron.py`'s `run_teleop_loop()`, mirroring `test_teleop_headless.py`'s
+  established pattern for `build_scene.py` (reuses `mefron.py`'s own
+  functions as a library, fakes a target drag via monkeypatching
+  `target.get_world_pose()`). Used to confirm the
+  `/app/player/playSimulations` fix above. **Verified**: `plan_single
+  success=True`, real joint-position deltas.
+- `scripts/test_mefron_assembly_headless.py` — headless regression test
+  for Step 6's `compute_grasp_approach_pose()`/
+  `compute_assembly_grasp_target()` and the G/P one-shot snap requests,
+  simulating a keypress by calling
+  `gripper_control.request_grasp_approach()`/`request_assembly_target()`
+  directly rather than a real keyboard event (indistinguishable to
+  `run_teleop_loop()`, which only ever reads the request through its own
+  `consume_*_request()` methods). Runs both phases in sequence in one
+  process. **Verified**: caught the debounce-ordering bug above via its
+  own failure (sane pose math, zero `plan_single` calls) before the fix,
+  then passed cleanly after.
+- `scripts/franka_grasp_editor_scene.py`, `scripts/mefron_grasp_editor_scene.py`
+  — diagnostic scenes built while chasing the Grasp Editor bug documented
+  above; kept as working artifacts for future Grasp Editor use on a
+  different robot/asset combination, not currently part of any regular
+  workflow since T_S_G was derived via `compute_relative_pose()` instead.
+- `configs/scene/mefron_layout.yaml` + `scripts/build_scene_mefron.py` —
+  the **preferred** approach for the mefron scene, in place of
+  `scripts/mefron.py` above. Same overall goal (mount the Franka, run
+  cuRobo teleop) but built the way `build_scene.py` itself is: a fresh,
+  anonymous `SimulationApp` stage with `mefron.usd` brought in via
+  `add_reference_to_stage()` (under `/World/Factory`), not opened
+  directly. This one architectural difference avoids essentially every
+  bug found in `scripts/mefron.py` above *by construction*, confirmed
+  live:
+    - Since the stage's root layer stays anonymous/in-memory (same as
+      `build_scene.py`'s own stage always has), the URDF importer never
+      triggers the file-backed "Robot Description" multi-layer write (see
+      `assets/mefron/`'s entry above) — `build_teleop_target()`'s
+      original, unmodified `CopyPrim` approach (verbatim from
+      `build_scene.py`, no internal-reference workaround needed) produces
+      a target with real geometry on the first try.
+    - `mefron.usd`'s own `/PhysicsScene` lives at `/PhysicsScene`
+      (a sibling of `/World`, not nested inside it) in the source file —
+      `add_reference_to_stage()` only brings in the referenced prim's own
+      subtree (mefron's `/World` and everything under it), so this
+      sibling prim is never pulled onto the new stage at all. No
+      duplicate-scene conflict to work around; `run_teleop_loop()`'s
+      unmodified `/physicsScene` check just creates the one and only
+      scene, same as it does for `build_scene.py`'s own main scene.
+    - Referencing `mefron.usd` under `/World/Factory` nests its own
+      content one level deeper than opening it directly would: mefron's
+      own `/World/Factory` (its internal factory floor) becomes
+      `/World/Factory/Factory` here, and its `/World` siblings
+      (`packing_table`, `finger_print_scanner`, etc.) become
+      `/World/Factory/packing_table` etc. Confirmed empirically (not
+      assumed) via a live reference-and-inspect script — world positions
+      of nested content are unaffected (both stages are meters-native, no
+      scale reconciliation needed), only prim *paths* shift.
+    - The Stop→Play stale-`SingleArticulation` fix (see `mefron.py`'s
+      entry above) is ported here too and **re-verified independently** in
+      this file's own architecture: first-play fake-drag `0.2886` rad
+      end-effector movement, then a real `timeline.stop()`/`play()` cycle
+      in-process, then a second fake-drag `0.3378` rad movement — both
+      `plan_single success=True`.
+  Also loads `SimulationApp` with the **full** `isaacsim.exp.full.kit`
+  experience (same one `isaac-sim.sh` itself launches) instead of
+  `SimulationApp`'s own default minimal `isaacsim.exp.base.python.kit`,
+  for interactive (non-`--headless`) runs only — the base experience is
+  missing most UI extensions, including the Physics debug-visualization
+  menu needed to view collision meshes. **Real bug found and fixed**:
+  switching to the full experience broke cuRobo's own `from packaging
+  import version` (inside `curobo/util/torch_utils.py`) with
+  `FileNotFoundError: .../omni.services.pip_archive-.../pip_prebundle/
+  packaging/_structures.py` — a *different* extension bundles its own
+  incomplete internal `packaging` copy (missing `_structures.py`, an
+  older `packaging` release than the real one) that somehow takes
+  priority under the full experience. Confirmed this is **not** the
+  same kind of `sys.path`-ordering shadow already documented for `torch`
+  below: a full `sys.path` dump under the full experience never contains
+  any path under that extension at all, yet
+  `importlib.util.find_spec("packaging")` still resolves there — some
+  other, non-path-based resolution (almost certainly a custom
+  `sys.meta_path` finder the extension system registers) is responsible,
+  and it turned out to intercept `packaging.version` specifically by
+  name too, ignoring the parent module's own `__path__` even after
+  pre-registering a correct `packaging` in `sys.modules`. Fixed by
+  explicitly pre-loading *both* `packaging` and `packaging.version` from
+  their real `site-packages` location and setting the latter as a plain
+  attribute on the former, so `from packaging import version` resolves
+  via attribute lookup alone, with no further import-machinery
+  involvement for either name — confirmed live this survives the full
+  experience and reaches `curobo motion_gen: READY` same as before.
+  Applied to both this file and `scripts/mefron.py` for consistency.
 - `data/waypoints/` — recorded waypoint JSON (joint-space, not Cartesian);
   see its README for the schema.
 - `README.md`, `pyproject.toml`, `.github/workflows/lint.yml`, `tests/` —
@@ -360,16 +777,31 @@ above). Still open:
   patching that turned out to be required (see the yml's own module
   comment) — will fail the same way the unpatched version did during this
   investigation.
-- **Interactive teleop's real-time/GUI behavior isn't verified** — only
-  what a headless run can prove (see `scripts/build_scene.py`'s entry
-  above: obstacle scan scope/timing, `update_world()`, and a scripted
-  fake-drag all confirmed with the temporary Franka). Still needs at least
-  one manual GUI smoke test to confirm: real-time mouse-drag feel/
-  responsiveness (the headless test simulates a drag by monkeypatching
-  `get_world_pose()`, not an actual mouse), whether the ghost end-effector
-  copy visually reads as intended next to the real robot, and the
-  `timeline.is_playing()` Press-Play-to-start branch (no Play button exists
-  without a display).
+- **Interactive teleop's real-time/GUI behavior isn't verified for
+  `build_scene.py`/`table_layout.yaml` specifically** — only what a
+  headless run can prove (see `scripts/build_scene.py`'s and
+  `scripts/test_teleop_headless.py`'s entries above: obstacle scan
+  scope/timing, `update_world()`, and a scripted fake-drag all confirmed
+  with the temporary Franka). The *same* `run_teleop_loop()` pattern
+  (identical debounce/plan/apply logic) has since been GUI-verified for
+  real, in a sibling scene — see `scripts/mefron.py`/
+  `scripts/build_scene_mefron.py`'s entries above, which confirmed real
+  mouse-drag responsiveness, the ghost end-effector copy reading
+  correctly next to the real robot, and the Press-Play-to-start branch,
+  all live — which gives good confidence the same logic works here too,
+  but `build_scene.py`/`table_layout.yaml` itself still hasn't had that
+  exact manual GUI smoke test. **One real, confirmed bug from that GUI
+  testing is still latent and unfixed here specifically**: `run_teleop_loop()`
+  only ever builds its `SingleArticulation` once, on the very first Play
+  (gated by `idx_list is None`) — clicking **Stop** in the GUI tears down
+  PhysX's simulation view entirely, and reusing that now-stale
+  `SingleArticulation` after a later Play leaves the robot permanently
+  unresponsive (endless "Physics Simulation View is not created yet" in
+  the log) for the rest of that process. Confirmed and fixed in the
+  mefron scripts (track not-playing→playing transitions, rebuild
+  `robot`/`idx_list`/`articulation_controller` and reset per-session
+  state on *every* fresh Play) but that fix has not been ported into this
+  file.
 - `scripts/teach_waypoint.py`, `playback_waypoints.py` — each flags this in
   its own module docstring. (`scripts/waypoints.py` is plain Python with no
   Isaac Sim dependency and is covered by `tests/test_waypoints.py`.)
@@ -421,10 +853,15 @@ above). Still open:
   (`ModuleNotFoundError: No module named 'pip._vendor.packaging._structures'`)
   — cuRobo's CUDA kernels fall back to a JIT compile (needs `ninja`) when
   the prebuilt `.so` has a torch ABI mismatch, which happened on this
-  install. Fetch `ninja` as a static binary
-  (`ninja-build/ninja` GitHub releases) or via `apt-get install
-  ninja-build` instead of pip. Worth fixing at the image level
-  (`Dockerfile.curobo`) rather than working around it every time.
+  install. **Fixed**: `ninja-build` is now installed via `apt-get` in
+  `Dockerfile.curobo` (not `pip install ninja`, since pip itself is
+  broken here) — confirmed live that `build_scene.py --headless` now
+  JIT-compiles all five of cuRobo's CUDA kernels
+  (`kinematics_fused_cu`, `geom_cu`, `tensor_step_cu`, `lbfgs_step_cu`,
+  `line_search_cu`) cleanly and reaches `curobo motion_gen: READY`,
+  where it previously crashed with `undefined symbol:
+  _ZN3c104cuda29c10_cuda_check_implementationEiPKcS2_ib` (the torch ABI
+  mismatch) immediately followed by `RuntimeError: Ninja is required`.
 - Positioning a prim relative to `/World/Factory` needs care about which
   frame a number is in — see `configs/scene/table_layout.yaml`'s
   `ergo_tables`/`cr5_mount.pedestal` comments for two different, easy-to-
@@ -449,6 +886,77 @@ above). Still open:
   don't otherwise need it (see `run_teleop_loop()`'s own module comment) —
   where physics *is* needed, define one explicitly and minimally:
   `UsdPhysics.Scene.Define(stage, "/physicsScene")`.
+- Calling `timeline.play()` before physics has a real chance to settle
+  corrupts PhysX's tensor simulationView — confirmed live in two distinct
+  ways (see `scripts/test_teleop_headless.py`'s and `scripts/mefron.py`'s
+  entries above): playing before `/physicsScene` even exists on the
+  stage, and playing before a long blocking call (cuRobo's
+  `motion_gen.warmup()`, ~30s, which calls no `simulation_app.update()`
+  of its own) that leaves physics "playing" across an unpumped real-time
+  gap. Both produce the identical downstream symptom: a later
+  `SingleArticulation(...)` construction crashes with `AttributeError:
+  'NoneType' object has no attribute 'link_names'`. Any script driving
+  `timeline.play()` itself (rather than leaving it to a human clicking
+  Play in the GUI, this repo's usual pattern) needs to do so only *after*
+  both the physics scene exists and any blocking warmup work is done.
+- A `SingleArticulation` object is only valid for the specific PhysX
+  simulation view that existed when it was constructed — clicking **Stop**
+  in the GUI tears that view down entirely, and reusing a
+  `SingleArticulation` built before the Stop after a later Play leaves it
+  permanently broken (`get_joints_state()` never returns non-`None` again;
+  `isaacsim.core.prims.impl.articulation` logs "Physics Simulation View is
+  not created yet" forever). Any interactive loop that only builds its
+  `SingleArticulation` once (gated by e.g. `idx_list is None`, checked
+  just on the first Play) needs to instead track not-playing→playing
+  *transitions* and rebuild it (plus reset any other per-session state)
+  on every fresh Play, not just the first — see `scripts/mefron.py`'s
+  and `scripts/build_scene_mefron.py`'s `run_teleop_loop()` for the
+  pattern; `scripts/build_scene.py`'s own copy still has this bug (see
+  "Needs verification" above).
+- Isaac Sim's URDF importer behaves differently depending on whether the
+  target stage's root layer is a real, file-backed USD file
+  (`omni.usd.get_context().open_stage()`) or anonymous/in-memory (the
+  default for a fresh `SimulationApp`, or content brought in via
+  `add_reference_to_stage()` into such a stage). Confirmed live (see
+  `assets/mefron/`'s and `scripts/mefron.py`'s entries above): only the
+  file-backed case writes a disk-persisted, multi-layer "Robot
+  Description" structure (a `configuration/` folder of sublayer `.usd`
+  files) as a side effect of import, with no save prompt — and that
+  extra layering breaks `CopyPrim`-based prim duplication (a shallow,
+  spec-level copy that can't correctly re-resolve a same-layer reference
+  once relocated across the resulting more complex layer stack). Prefer
+  building scenes the way `build_scene.py` itself does — a fresh
+  anonymous stage with external content brought in via
+  `add_reference_to_stage()` — over opening an existing authored `.usd`
+  file directly, when the script needs to import a robot into it; this
+  sidesteps the whole class of bug rather than working around it (an
+  internal USD reference, `prim.GetReferences().AddInternalReference()`,
+  is the workaround if opening the file directly is unavoidable — see
+  `scripts/mefron.py`'s `build_teleop_target()`).
+- `SimulationApp`'s default experience (`isaacsim.exp.base.python.kit`)
+  is missing most UI extensions, including the Physics debug-
+  visualization menu (needed to view collision meshes in the viewport).
+  Pass `experience=f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'`
+  (the same experience `isaac-sim.sh` itself launches) to get the full
+  menu bar for interactive runs — see `scripts/mefron.py`'s/
+  `scripts/build_scene_mefron.py`'s `SimulationApp(...)` construction.
+  **Gotcha, confirmed live**: doing this breaks cuRobo's own `from
+  packaging import version` (inside `curobo/util/torch_utils.py`) —
+  the full experience's extra extensions make `packaging`/
+  `packaging.version` resolve to a different, incomplete internal
+  pip-bootstrap bundle instead of the real `site-packages` install, and
+  confirmed this is *not* a `sys.path`-ordering issue like the `torch`
+  shadow above (that bundle's path never appears in `sys.path` at all,
+  and pre-registering a correct `sys.modules["packaging"]` alone still
+  didn't stop `packaging.version` specifically from resolving wrong —
+  some other, non-path-based resolution, almost certainly a custom
+  `sys.meta_path` finder the extension system registers, intercepts the
+  submodule by name regardless of the parent module's own `__path__`).
+  Fixed by explicitly pre-loading both `packaging` and `packaging.version`
+  from their real `site-packages` files and setting the latter as a
+  plain attribute on the former, so `from packaging import version`
+  resolves via attribute lookup alone — see the top of
+  `scripts/mefron.py`/`scripts/build_scene_mefron.py` for the pattern.
 
 ## Provenance / licensing
 
