@@ -114,19 +114,23 @@ Currently open issues (see the linked docs for full diagnosis):
 
 ## CR5 validation (`dobot` branch)
 
-**Status: bare-arm CR5 mount + cuRobo teleop confirmed working.**
-`configs/scene/table_layout.yaml`'s `cr5_mount.robot_override.enabled` is
-now `false` — `scripts/build_scene.py` mounts the real, already-vendored
-CR5 (`robots/cr5/`, from the official `Dobot-Arm/TCP-IP-ROS-6AXis` repo —
-no USD exists anywhere for the CR5, official or community) instead of the
-Franka stand-in it used before. `scripts/test_teleop_headless.py --headless`
-passes: `plan_single success=True`, robot moves in response to a simulated
-drag. No gripper yet (see below) and the mefron scanner-assembly scene
+**Status: bare-arm CR5 mount + cuRobo teleop confirmed working, and
+confirmed smooth** (see bug #5 below — an earlier pass only checked that
+the arm reached the goal, not how cleanly). `configs/scene/table_layout.yaml`'s
+`cr5_mount.robot_override.enabled` is now `false` — `scripts/build_scene.py`
+mounts the real, already-vendored CR5 (`robots/cr5/`, from the official
+`Dobot-Arm/TCP-IP-ROS-6AXis` repo — no USD exists anywhere for the CR5,
+official or community) instead of the Franka stand-in it used before.
+`scripts/test_teleop_headless.py --headless` passes: `plan_single
+success=True`, robot moves in response to a simulated drag. No gripper yet
+(see below) and the mefron scanner-assembly scene
 (`build_scene_mefron.py`/`mefron_layout.yaml`) hasn't been touched — this
 was validated in the generic `table_layout.yaml` testbed only.
 
 Getting a passing run required fixing four real, previously-undiscovered
-bugs in the CR5's first-draft config (not just flipping the override flag):
+bugs in the CR5's first-draft config (not just flipping the override flag),
+plus a fifth found on a later pass chasing a motion-*quality* bug (the arm
+reached the goal, just not cleanly):
 
 1. **URDF joint velocity limits were `velocity="0"` on every joint**
    (`robots/cr5/urdf/cr5_robot.urdf`) — a SolidWorks-exporter artifact,
@@ -169,6 +173,60 @@ bugs in the CR5's first-draft config (not just flipping the override flag):
    retract-pose change should be sanity-checked the same way (compute FK +
    numerical Jacobian, don't assume a "reasonable-looking" pose is
    non-singular).
+5. **The CR5's actual joint drives were running with `damping=0`** — a
+   fully undamped spring — regardless of `import_cr5.py`'s stated
+   `default_drive_strength=1e5`/`default_position_drive_damping=1e4`.
+   Reported as "the arm swings back and forth (totem pole) right as a move
+   starts and right as it stops, but is smooth mid-traversal" — exactly
+   where a time-optimal trajectory's jerk peaks, and exactly what an
+   undamped drive rings hardest against. Confirmed two compounding causes:
+   - `run_teleop_loop()`/`setup_curobo_motion_gen()` ran cuRobo's plan at
+     its full, natural (un-derated, non-dilated) speed — `MotionGenPlanConfig()`
+     and `MotionGenConfig.load_from_robot_config()` were called with no
+     `time_dilation_factor`/`velocity_scale`/`acceleration_scale` at all,
+     unlike the one other teleop loop in this repo
+     (`scripts/mefron_lib/config.py`'s `_TELEOP_VELOCITY_SCALE`/
+     `_TELEOP_ACCELERATION_SCALE` = 0.5, `_TELEOP_TIME_DILATION_FACTOR` =
+     0.3, driving a Franka there). Fixed by adding the same three knobs,
+     config-driven via `table_layout.yaml`'s `teleop_target.teleop_*`
+     keys — confirmed via headless per-joint velocity logging that the
+     *planned* trajectory was already a clean trapezoid; this alone wasn't
+     enough (see next point), but is a real, necessary derating on top of
+     it. Required also bumping `test_teleop_headless.py`'s
+     `_MAX_ITERATIONS` 200 → 3000, since a properly-derated/dilated
+     trajectory takes ~10x more applied waypoints (350 vs. 33) to finish,
+     and `run_teleop_loop()` has no "stop once the plan completes early"
+     exit — a too-small budget doesn't fail loudly, it silently stops
+     observing partway through the move.
+   - Even after that, per-joint (not just aggregate) planned-vs-measured
+     velocity logging showed `joint4`/`joint6` specifically diverging
+     from the plan — *growing*, not decaying, worst during deceleration
+     (`joint4` climbing to +0.58 rad/s, `joint6` to -0.48..-0.61 rad/s,
+     while the plan called for ~0). Ruled out physical self-collision
+     between those links first (`import_cr5.py`'s `self_collision=False`
+     disables all self-collision contact for this articulation, confirmed
+     against the importer's own UI tooltip). Root cause: introspecting the
+     live USD `DriveAPI` directly after import showed every joint as
+     `type=acceleration, stiffness=625, damping=0`, even though the
+     `ImportConfig` object itself held `default_drive_strength=1e5`/
+     `default_position_drive_damping=1e4` correctly right before
+     `URDFParseAndImportFile` ran — those two fields simply don't reach
+     the authored joints on this Isaac Sim version (also tried
+     `ImportConfig.override_joint_dynamics = True`: changes damping to
+     small per-joint values instead of 0, but stiffness stays pinned at
+     625 and neither field's requested value ever lands). Fixed by
+     explicitly re-authoring `UsdPhysics.DriveAPI` stiffness/damping
+     directly on each joint right after import — a new opt-in
+     `joint_drive_stiffness`/`joint_drive_damping` param on `import_cr5()`,
+     wired up only for the real CR5 (not the Franka-override branch, whose
+     own tuning hasn't been checked against this same behavior), values
+     from `table_layout.yaml`'s `cr5_mount.joint_drive` (`stiffness=625`,
+     kept from the importer's own incidental value; `damping=50`, exactly
+     critically-damped for that stiffness in acceleration-mode terms:
+     `2*zeta*omega_n` with `omega_n=sqrt(625)=25`, `zeta=1`). Confirmed via
+     the same per-joint logging that this — not the derating above — is
+     what actually removes both the initial kick and the end-of-motion
+     divergence.
 
 Both fixes to `retract_config` and the URDF-import mount pose meant
 `table_layout.yaml`'s `teleop_target.position`/`orientation_wxyz` (originally
@@ -222,7 +280,11 @@ is added: vendor its URDF the same way `robots/cr5/SOURCE.md` documents
 for the arm, mount it on `Link6`, and expect to re-derive a new
 `retract_config`/collision-sphere set again (adding a gripper changes the
 kinematic chain and mass distribution) — don't assume this branch's
-current `cr5.yml` values carry over unchanged.
+current `cr5.yml` values carry over unchanged. Also re-check
+`table_layout.yaml`'s `cr5_mount.joint_drive.stiffness`/`damping` (bug #5
+above) once a gripper adds real mass/inertia at `Link6` — `damping=50` was
+derived as exactly critically-damped for the current bare-flange
+configuration specifically, not a generic constant.
 
 ## Must-know gotchas
 
@@ -235,6 +297,20 @@ current `cr5.yml` values carry over unchanged.
   Velocity has **no config-level override** (read straight from the URDF);
   jerk/acceleration do (`cspace.max_jerk`/`max_acceleration`). See "CR5
   validation" above for the full story.
+- **URDF importer's `ImportConfig.default_drive_strength`/
+  `default_position_drive_damping` don't reliably reach the actual
+  authored joints** (confirmed on the pinned Isaac Sim version here) —
+  the `ImportConfig` object holds whatever you set correctly, but the
+  resulting `UsdPhysics.DriveAPI` on each joint can come out completely
+  different (`type=acceleration, stiffness=625, damping=0` regardless of a
+  requested `1e5`/`1e4`, for `robots/cr5/urdf/cr5_robot.urdf`) — don't
+  trust these fields actually took effect just because the import
+  succeeded; read back `UsdPhysics.DriveAPI.Get(joint_prim, "angular")`'s
+  own attributes after import to check. If they're wrong, re-author them
+  directly post-import instead (see `import_cr5()`'s
+  `joint_drive_stiffness`/`joint_drive_damping` params and "CR5
+  validation"'s bug #5 above) — don't assume adjusting the `ImportConfig`
+  values will change anything.
 - **cuRobo's `collision_sphere_buffer` adds to every sphere's radius**,
   not just a display margin — a sphere that looks "tangent" to some plane
   using its raw declared radius will still poke through it once the buffer

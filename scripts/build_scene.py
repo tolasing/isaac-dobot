@@ -172,7 +172,17 @@ def mount_cr5(cfg: dict) -> None:
             default_position_drive_damping=override["default_position_drive_damping"],
         )
     else:
-        import_cr5(prim_path=mount_cfg["prim_path"])
+        # joint_drive_stiffness/damping bypasses default_drive_strength/
+        # default_position_drive_damping, which are confirmed NOT to reliably
+        # reach the actual authored joints on this Isaac Sim version -- see
+        # import_cr5()'s own docstring for the live-confirmed mechanism and
+        # why this fix is scoped to just this (real CR5, non-override) branch.
+        joint_drive_cfg = mount_cfg.get("joint_drive", {})
+        import_cr5(
+            prim_path=mount_cfg["prim_path"],
+            joint_drive_stiffness=joint_drive_cfg.get("stiffness"),
+            joint_drive_damping=joint_drive_cfg.get("damping"),
+        )
     xform = SingleXFormPrim(prim_path=mount_cfg["prim_path"])
     xform.set_world_pose(
         position=np.array(mount_cfg["position"]),
@@ -313,8 +323,13 @@ def setup_curobo_motion_gen(cfg: dict):
         k["collision_spheres"] = str(cr5_yml.parent / k["collision_spheres"])
 
     world_cfg = get_teleop_obstacles(cfg, robot_prim_path=mount_cfg["prim_path"])
+    target_cfg = cfg["teleop_target"]
     motion_gen_config = MotionGenConfig.load_from_robot_config(
-        {"robot_cfg": robot_cfg}, world_cfg, tensor_args=TensorDeviceType()
+        {"robot_cfg": robot_cfg},
+        world_cfg,
+        tensor_args=TensorDeviceType(),
+        velocity_scale=target_cfg["teleop_velocity_scale"],
+        acceleration_scale=target_cfg["teleop_acceleration_scale"],
     )
     motion_gen = MotionGen(motion_gen_config)
     motion_gen.warmup()
@@ -385,7 +400,12 @@ def run_teleop_loop(
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
     tensor_args = TensorDeviceType()
-    plan_config = MotionGenPlanConfig()
+    # Re-times the already-planned (already velocity/acceleration-derated --
+    # see setup_curobo_motion_gen()) trajectory to play out slower still,
+    # rather than changing what's reachable/feasible -- see
+    # table_layout.yaml's teleop_time_dilation_factor comment for why both
+    # knobs are needed together.
+    plan_config = MotionGenPlanConfig(time_dilation_factor=cfg["teleop_target"]["teleop_time_dilation_factor"])
     timeline = omni.timeline.get_timeline_interface()
 
     # motion_gen's kinematics/IK/trajopt all operate in the robot's own

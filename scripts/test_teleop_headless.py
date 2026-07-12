@@ -85,7 +85,19 @@ import build_scene  # noqa: E402
 # shrunk rather than re-tuning retract_config again to fit an otherwise-
 # meaningless constant.
 _DRAG_OFFSET = np.array([0.0, 0.02, 0.02])
-_MAX_ITERATIONS = 200
+# table_layout.yaml's teleop_time_dilation_factor/teleop_velocity_scale/
+# teleop_acceleration_scale (added to fix a start/stop tracking oscillation --
+# see that file's own comment) make this same drag's trajectory ~10x longer
+# in applied-waypoint count (confirmed live: 350 waypoints post-fix vs. 33
+# before). 200 predates that change and was silently truncating the run
+# before the trajectory ever reached its deceleration phase -- run_teleop_loop
+# has no "stop once cmd_plan finishes early" exit, so a too-small budget here
+# doesn't fail loudly, it just quietly stops observing partway through the
+# move. 3000 gives ~2x headroom over the observed 350-waypoint completion, to
+# absorb a slower/faster machine changing how many step_index ticks fit in
+# the same real-world interpolation_dt window (the gate is wall-clock-timed,
+# not step-count-timed -- see run_teleop_loop's own comment).
+_MAX_ITERATIONS = 3000
 # Must clear build_scene._TELEOP_INIT_FRAMES (10) + _TELEOP_SETTLE_FRAMES
 # (20) before the simulated drag lands, so run_teleop_loop's debounce logic
 # sees a genuinely static target first, same as a real pre-drag pause would.

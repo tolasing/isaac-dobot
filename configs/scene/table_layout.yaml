@@ -161,6 +161,28 @@ cr5_mount:
     # single static mesh reference, no joint chain to distort.
     scale: [0.5, 0.5, 0.8]
 
+  # Explicitly (re-)authored directly on each joint's angular UsdPhysics.DriveAPI
+  # after import (see import_cr5()'s own docstring) -- NOT the same knob as
+  # robot_override.default_drive_strength/default_position_drive_damping below,
+  # and only wired up for this (real CR5, non-override) branch. Confirmed live
+  # that import_cr5()'s default_drive_strength=1e5/default_position_drive_damping=1e4
+  # never actually reach the authored joints on this Isaac Sim version -- every
+  # joint came out as type=acceleration, stiffness=625, damping=0 regardless, a
+  # fully undamped spring that was the real, dominant cause of the CR5's "swings
+  # back and forth at the start/stop of a move" bug. stiffness=625 == a natural
+  # frequency of 25 rad/s in acceleration-mode drives (stiffness is rad^2/s^2
+  # here, not torque/rad); keeping that (it's what the importer already used,
+  # and gives a reasonably fast teleop response) and setting damping=50 is
+  # exactly critically-damped (zeta=1) for that same omega_n:
+  # damping = 2*zeta*omega_n = 2*1*25 = 50. Confirmed via headless per-joint
+  # planned-vs-measured velocity logging: this removed both the violent initial
+  # kick (was ~10x the commanded velocity at the very first waypoint) and the
+  # growing end-of-motion divergence (was still ~0.5-0.6 rad/s on the wrist
+  # joints once the plan had already ramped down to ~0).
+  joint_drive:
+    stiffness: 625.0
+    damping: 50.0
+
   # TEMPORARY: mount cuRobo's own bundled, well-tuned Franka Panda instead
   # of the CR5, to validate the whole pipeline (mount pose, pedestal,
   # teleop via examples/curobo_reference/motion_gen_reacher.py, cuRobo
@@ -248,6 +270,30 @@ teleop_target:
   # live in the GUI.
   pose_delta_threshold: 1.0e-3
   static_joint_velocity_threshold: 0.5
+
+  # Derate trajectory optimization + re-time the result, instead of running
+  # cuRobo's own natural (fastest-feasible) plan straight through the CR5's
+  # placeholder drive gains (import_cr5.py's default_drive_strength=1e5/
+  # default_position_drive_damping=1e4 -- "a workaround for degenerate URDF
+  # joints... not a generally correct value", see that file's own comment)
+  # and placeholder cspace limits (configs/curobo/cr5.yml's max_jerk=500.0/
+  # max_acceleration=15.0 -- "not sourced from the CR5 datasheet yet").
+  # Confirmed live (scripts/test_teleop_headless.py with temporary
+  # planned-vs-measured velocity logging) that without this, the *planned*
+  # trajectory is a clean trapezoid peaking exactly at the URDF's 3.14 rad/s
+  # joint-velocity ceiling, but the *measured* joint velocity overshoots it
+  # by ~10x at the very first waypoint (0.11 planned vs. 1.09 measured) and,
+  # symmetrically, is still measured at 0.64 rad/s once the plan has already
+  # ramped down to 0.02 at the last waypoint -- that leftover momentum (no
+  # longer being commanded once cmd_plan runs out) is what then has to swing
+  # back to actually stop. Same knobs, same values as the one other teleop
+  # loop in this repo already confirmed smooth (scripts/mefron_lib/config.py's
+  # _TELEOP_VELOCITY_SCALE/_TELEOP_ACCELERATION_SCALE/_TELEOP_TIME_DILATION_FACTOR,
+  # driving a Franka there instead) -- start here rather than hand-tuning the
+  # CR5's own gains/limits blind.
+  teleop_velocity_scale: 0.5
+  teleop_acceleration_scale: 0.5
+  teleop_time_dilation_factor: 0.3
 
 assembly_parts:
   # Assembly parts for the robot to (eventually) pick/place -- SolidWorks
