@@ -183,6 +183,58 @@ cr5_mount:
     stiffness: 625.0
     damping: 50.0
 
+  # GRIPPER ADDITION: PGC-140 open/close teleop control + its own drive
+  # tuning (scripts/import_cr5.py's tune_gripper_drive(), wired up from
+  # scripts/build_scene.py). Deliberately its own sub-block, NOT sharing
+  # joint_drive above -- the gripper's prismatic joint is a completely
+  # different mass/stiffness regime than the arm's revolute joints, so
+  # there's no reason to expect the arm's stiffness=625.0/damping=50.0
+  # (critically-damped for THAT joint's own importer-assigned stiffness)
+  # applies here at all.
+  gripper:
+    # pgc140_finger1_joint's own URDF <limit lower="0" upper="0.025" .../>
+    # (robots/pgc140/urdf/pgc140_robot.urdf) -- full stroke, not narrowed
+    # to any particular part's width yet (unlike scripts/mefron_lib/
+    # config.py's GRIPPER_OPEN_POSITION/GRIPPER_CLOSED_POSITION, which
+    # were bracketed to finger_print_scanner's own measured width -- no
+    # equivalent part-specific measurement exists for this branch yet).
+    #
+    # CONFIRMED LIVE which extreme is actually which: directly computed
+    # each finger link's world position at both q=0.0 and q=0.025 (the
+    # joint's own axis, in pgc140_base_link's frame, points inward toward
+    # the gripper's centerline as q increases -- both fingers converge from
+    # ~30mm off-centerline at q=0.0 to ~13mm at q=0.025). So q=0.0 is OPEN
+    # and q=0.025 is CLOSED -- opposite of the URDF's raw lower/upper naming,
+    # and opposite of an earlier draft of this file, which had these two
+    # values swapped (and, via cr5.yml's retract_config/lock_joints, was
+    # silently locking the gripper CLOSED by default during planning).
+    open_position: 0.0
+    closed_position: 0.025
+    # Rate (m/s) the commanded gripper position is ramped toward open/
+    # closed, instead of stepping instantly -- same idea and same starting
+    # value as scripts/mefron_lib/config.py's GRIPPER_CLOSE_SPEED, not yet
+    # independently tuned for this gripper's own (unconfirmed) drive
+    # response.
+    close_speed: 0.02
+    # NOT pre-derived by analogy to the arm's critically-damped
+    # stiffness=625.0/damping=50.0 -- confirm empirically (per-joint
+    # planned-vs-measured logging, same method that found the arm's own
+    # damping=0 bug) whether these placeholder values are even in the
+    # right regime before trusting them; acceleration-mode drives divide
+    # out effective inertia, so mass alone doesn't tell us what number
+    # belongs here. Not yet verified live (no Isaac Sim/GPU in this dev
+    # environment).
+    joint_drive:
+      stiffness: 625.0
+      damping: 50.0
+    # Bounded contact force -- a genuinely new concern the bare arm never
+    # needed (position tracking only, never touched anything). Set to
+    # PGC-140's own URDF effort="140" ceiling (matches the datasheet's
+    # "up to 140N" per-jaw rating) as a first-draft upper bound, not a
+    # value chosen for any particular part's fragility -- lower this once
+    # a real part is actually being grasped.
+    max_force: 140.0
+
   # TEMPORARY: mount cuRobo's own bundled, well-tuned Franka Panda instead
   # of the CR5, to validate the whole pipeline (mount pose, pedestal,
   # teleop via examples/curobo_reference/motion_gen_reacher.py, cuRobo
@@ -253,12 +305,30 @@ teleop_target:
   # (all-zero -> bent-elbow, see that file's own comment -- the all-zero
   # pose was a severe kinematic singularity) -- this position/orientation
   # is FK at the new retract_config, not the old all-zero one.
+  #
+  # GRIPPER ADDITION -- RE-VERIFIED LIVE, still numerically correct: after
+  # configs/curobo/cr5.yml's ee_link moved from "Link6" to
+  # "pgc140_base_link", re-ran the exact FK computation this comment
+  # documents (CudaRobotModel(cr5.yml).get_state(retract_config).ee_pose,
+  # composed with cr5_mount.position/orientation_wxyz) against the NEW
+  # ee_link, and got back these exact same numbers -- because
+  # scripts/generate_cr5_pgc140_urdf.py's Link6-to-gripper mount joint is
+  # currently an identity transform (MOUNT_ORIGIN_XYZ/_RPY = "0 0 0"),
+  # pgc140_base_link is geometrically coincident with where Link6 used to
+  # be. This will go stale again the moment that mount transform is
+  # updated to a real, non-zero offset (once visually confirmed in the
+  # GUI) -- recompute at that point, using the same command, don't assume
+  # it's still correct just because it was here.
   position: [1.5630276203155518, -3.5731465816497803, 1.7584779262542725]
-  # CR5 ee_link's (Link6) own retract-config orientation -- NOT the same
-  # "point straight down" convention the old Franka-derived value used
-  # (examples/curobo_reference/motion_gen_reacher.py's default goal
-  # orientation doesn't apply here; that reference robot's ee_link frame
-  # convention differs from the CR5 URDF's Link6).
+  # CR5 ee_link's (now pgc140_base_link) own retract-config orientation --
+  # NOT the same "point straight down" convention the old Franka-derived
+  # value used (examples/curobo_reference/motion_gen_reacher.py's default
+  # goal orientation doesn't apply here; that reference robot's ee_link
+  # frame convention differs from the CR5 URDF's Link6, and by extension
+  # pgc140_base_link while it's mounted at an identity offset from it).
+  # Same re-verification note as position above -- still numerically
+  # correct today, will go stale once the mount transform stops being
+  # identity.
   orientation_wxyz: [0.2753560245037079, -0.07059486210346222, 0.6512897610664368, -0.703574538230896]
 
   # Debounce thresholds gating when plan_single() actually runs (see

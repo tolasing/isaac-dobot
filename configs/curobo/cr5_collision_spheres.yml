@@ -68,3 +68,30 @@ collision_spheres:
       radius: 0.05
     - center: [0.0, 0.0, 0.03]
       radius: 0.04
+
+  # GRIPPER ADDITION, same "rough placeholder" caveat as the rest of this
+  # file applies doubly here -- these are NOT fit to the actual PGC-140
+  # mesh geometry at all (no mesh-fitting tool was run; this dev
+  # environment has no Isaac Sim/GPU to run one), only loosely bounded from
+  # the vendored URDF's own joint-origin offsets (robots/pgc140/urdf/
+  # pgc140_robot.urdf: both finger joints originate at local z=0.093,
+  # xy=(+/-0.0132, +/-0.0265) relative to pgc140_base_link's own origin).
+  # Overlap between these spheres and Link6's own (this link mounts flush
+  # on Link6 via a fixed joint, see cr5.yml's self_collision_ignore) is
+  # expected and already ignored there -- these need real fitting before
+  # being trusted for collision avoidance against anything else (Link4/
+  # Link5 in some arm configurations, or the mounted world), per the
+  # gripper integration plan's own milestone sequence.
+  pgc140_base_link:
+    - center: [0.0, 0.0, 0.02]
+      radius: 0.045
+    - center: [0.0, 0.0, 0.07]
+      radius: 0.035
+
+  pgc140_finger1_link:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.018
+
+  pgc140_finger2_link:
+    - center: [0.0, 0.0, 0.0]
+      radius: 0.018

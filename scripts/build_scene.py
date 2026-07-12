@@ -1,10 +1,18 @@
 """Builds /World/Factory (backdrop), two reused ErgoTable desks near the
-robot, imports+mounts the CR5 cobot (or, temporarily, a Franka Panda --
-see cr5_mount.robot_override) between them, warms up a matching cuRobo
-MotionGen (best-effort -- skipped if cuRobo isn't installed, e.g. the
-`base` Docker profile), and -- when cuRobo is available and not running
---headless -- runs an interactive teleop loop: drag the ghost end-effector
-target in the GUI viewport and the robot follows via MotionGen.plan_single().
+robot, imports+mounts the CR5 cobot with a PGC-140 gripper on its Link6
+(or, temporarily, a bare Franka Panda -- see cr5_mount.robot_override)
+between them, warms up a matching cuRobo MotionGen (best-effort -- skipped
+if cuRobo isn't installed, e.g. the `base` Docker profile), and -- when
+cuRobo is available and not running --headless -- runs an interactive
+teleop loop: drag the ghost end-effector target in the GUI viewport and the
+robot follows via MotionGen.plan_single(), with C/O keys opening/closing
+the gripper.
+
+The gripper addition (robots/pgc140/, robots/cr5_pgc140/urdf/combined.urdf,
+the gripper-tuning/teleop-control code below) has NOT been verified against
+a live Isaac Sim install -- unlike the bare-arm mount below, which has.
+See robots/pgc140/SOURCE.md and this file's own GRIPPER ADDITION comments
+for what specifically still needs live confirmation.
 
 Verified against a live Isaac Sim 5.1.0 install (isaac-cobot-base
 container, real GPU). The factory backdrop asset loads asynchronously --
@@ -74,7 +82,13 @@ from isaacsim.core.utils.stage import add_reference_to_stage  # noqa: E402
 from isaacsim.core.utils.types import ArticulationAction  # noqa: E402
 from pxr import Usd, UsdPhysics  # noqa: E402
 
-from import_cr5 import import_cr5  # noqa: E402
+from import_cr5 import (  # noqa: E402
+    GRIPPER_JOINT_NAMES,
+    disable_gripper_finger_gravity,
+    filter_self_collision_from_curobo_config,
+    import_cr5,
+    tune_gripper_drive,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "configs" / "scene" / "table_layout.yaml"
@@ -183,6 +197,39 @@ def mount_cr5(cfg: dict) -> None:
             joint_drive_stiffness=joint_drive_cfg.get("stiffness"),
             joint_drive_damping=joint_drive_cfg.get("damping"),
         )
+        # GRIPPER ADDITION: tunes the PGC-140's own prismatic finger
+        # joint(s) separately from the arm's angular joints above -- see
+        # tune_gripper_drive()'s own docstring for why this can't just
+        # reuse the loop above (linear, not angular, DriveAPI; the
+        # gripper's own stiffness/damping/max_force, not the arm's).
+        # Also scoped to only this (real CR5, non-override) branch -- the
+        # Franka-override branch imports a different, gripper-less URDF
+        # entirely and has never had this tuning checked against it.
+        gripper_cfg = mount_cfg.get("gripper", {})
+        gripper_joint_drive_cfg = gripper_cfg.get("joint_drive", {})
+        tune_gripper_drive(
+            prim_path=mount_cfg["prim_path"],
+            stiffness=gripper_joint_drive_cfg.get("stiffness"),
+            damping=gripper_joint_drive_cfg.get("damping"),
+            max_force=gripper_cfg.get("max_force"),
+        )
+        # GRIPPER ADDITION: see filter_self_collision_from_curobo_config()'s
+        # own docstring -- applies a PhysX-level FilteredPairsAPI exclusion
+        # for every pair already listed in configs/curobo/cr5.yml's
+        # self_collision_ignore (not just the finger-vs-finger pair an
+        # earlier, narrower version of this call filtered, which was
+        # confirmed live to NOT explain the "pgc140_finger1_joint stalls
+        # partway" symptom on its own) -- keeps PhysX's simulation-time
+        # filtering in sync with cuRobo's planning-time model.
+        filter_self_collision_from_curobo_config(prim_path=mount_cfg["prim_path"])
+        # GRIPPER ADDITION: see disable_gripper_finger_gravity()'s own
+        # docstring for the full reasoning -- a direction-dependent
+        # steady-state offset (which specific finger stalls flips between
+        # opening and closing) matches a constant-disturbance signature on
+        # a P+D-only (acceleration-mode) drive, and gravity's component
+        # differs per finger because their motion axes are deliberately
+        # mirrored. Real-world negligible for a 14g finger anyway.
+        disable_gripper_finger_gravity(prim_path=mount_cfg["prim_path"])
     xform = SingleXFormPrim(prim_path=mount_cfg["prim_path"])
     xform.set_world_pose(
         position=np.array(mount_cfg["position"]),
@@ -216,6 +263,47 @@ def mount_cr5_pedestal(cfg: dict) -> None:
         orientation=np.array(pedestal_cfg["local_orientation_wxyz"]),
     )
     xform.set_local_scale(np.array(pedestal_cfg["scale"]))
+
+
+class GripperKeyboardControl:
+    """Open/closed request for the PGC-140 gripper, read once per teleop
+    frame -- mirrors scripts/mefron_lib/teleop.py's GripperKeyboardControl
+    (a different robot/pipeline entirely), kept as its own, self-contained
+    implementation here rather than imported from there: this generic CR5
+    testbed is deliberately scoped apart from the mefron/Franka pipeline
+    (see CLAUDE.md's own "Where things live" section), and only needs the
+    C/O open-close behavior, not that pipeline's P/J assembly-placement
+    keys."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def set_closed(self, closed: bool) -> None:
+        self.closed = closed
+
+
+def build_gripper_keyboard_control() -> GripperKeyboardControl:
+    """Subscribes to keyboard events: C closes the gripper, O opens it."""
+    import carb.input
+    import omni.appwindow
+
+    control = GripperKeyboardControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if event.input == carb.input.KeyboardInput.C:
+                control.set_closed(True)
+            elif event.input == carb.input.KeyboardInput.O:
+                control.set_closed(False)
+        return True
+
+    # Kept alive on the control object so the subscription isn't garbage-collected.
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
 
 
 def build_teleop_target(cfg: dict, robot_prim_path: str, robot_cfg: dict) -> SingleXFormPrim:
@@ -351,6 +439,7 @@ def run_teleop_loop(
     target: SingleXFormPrim,
     robot_prim_path: str,
     max_iterations: int | None = None,
+    gripper_control: GripperKeyboardControl | None = None,
 ) -> None:
     """Drag `target` in the GUI viewport; the robot follows via cuRobo's
     MotionGen. A from-scratch port of the debounce/plan/apply pattern in
@@ -423,8 +512,26 @@ def run_teleop_loop(
         quaternion=tensor_args.to_device(np.array(mount_cfg["orientation_wxyz"])),
     )
 
-    j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
-    default_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    # GRIPPER ADDITION: cspace.joint_names/retract_config now also include
+    # both gripper finger joints (configs/curobo/cr5.yml), but idx_list/
+    # cmd_plan below stay arm-only -- leaving them in idx_list would make
+    # the arm's own periodic cmd_plan-apply block re-assert cuRobo's locked
+    # constant onto the gripper's DOF every interpolation_dt tick, fighting
+    # the gripper-override block's every-frame write below (a real "two
+    # writers" risk: that block only runs later in the same frame, so it
+    # only "wins" for that one frame, not against the arm's next periodic
+    # write). Tried this fix in isolation first, live -- it made no
+    # observable difference to a stuck-gripper symptom that turned out to
+    # have a completely different, unrelated cause (a broken PhysX mimic
+    # API on pgc140_finger2_joint, since fixed -- see robots/pgc140/
+    # SOURCE.md). Kept anyway as a real, still-worthwhile guard against the
+    # two-writers scenario it does prevent, just not the fix for that
+    # particular bug.
+    all_j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
+    all_retract_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    _arm_mask = [name not in GRIPPER_JOINT_NAMES for name in all_j_names]
+    j_names = [name for name, is_arm in zip(all_j_names, _arm_mask) if is_arm]
+    default_config = all_retract_config[_arm_mask]
     target_cfg = cfg["teleop_target"]
     pose_delta_threshold = target_cfg["pose_delta_threshold"]
     static_joint_velocity_threshold = target_cfg["static_joint_velocity_threshold"]
@@ -475,6 +582,19 @@ def run_teleop_loop(
     not_playing_frames = 0
     was_playing = False
 
+    # GRIPPER ADDITION -- mirrors scripts/mefron_lib/teleop.py's own
+    # gripper ramp state: gripper_idx_list is rebuilt alongside idx_list on
+    # every fresh Play (bound to the same PhysX simulation view); the ramp
+    # state (gripper_setpoint/last_gripper_time) is also reset on every
+    # fresh Play, so the gripper snaps instantly to whatever
+    # gripper_control.closed currently says on the first post-rebuild
+    # frame, then ramps smoothly for any later toggle during that Play
+    # session -- same behavior as the Franka pipeline, not a new tradeoff
+    # introduced here.
+    gripper_idx_list = None
+    gripper_setpoint = None
+    last_gripper_time = None
+
     while simulation_app.is_running():
         simulation_app.update()
 
@@ -501,6 +621,10 @@ def run_teleop_loop(
             obstacles = None
             step_index = 0
             was_playing = True
+            # GRIPPER ADDITION: see this function's own state-init comment above.
+            gripper_idx_list = None
+            gripper_setpoint = None
+            last_gripper_time = None
 
         # step_index only advances on frames where physics is actually
         # stepping -- matching World.current_time_step_index in the
@@ -519,6 +643,22 @@ def run_teleop_loop(
             robot.initialize()
             idx_list = [robot.get_dof_index(x) for x in j_names]
             articulation_controller = robot.get_articulation_controller()
+            # GRIPPER ADDITION: both PGC-140 finger joints are ordinary,
+            # independent prismatic joints (robots/pgc140/urdf/
+            # pgc140_robot.urdf has no <mimic> tag -- removed after
+            # confirming live that this Isaac Sim version imports a
+            # prismatic <mimic> as a broken, rotational PhysX mimic API
+            # with no attached drive; see that directory's SOURCE.md), so
+            # both normally show up in robot.dof_names and both get
+            # commanded explicitly below -- the same pattern
+            # scripts/mefron_lib/teleop.py already uses for the Franka's
+            # two independent finger joints. Empty if no gripper is
+            # mounted at all (e.g. the Franka robot_override branch), in
+            # which case the gripper-control block at the end of this loop
+            # is simply a no-op.
+            gripper_idx_list = [
+                robot.get_dof_index(name) for name in GRIPPER_JOINT_NAMES if name in robot.dof_names
+            ]
 
         if step_index < _TELEOP_INIT_FRAMES:
             robot.set_joint_positions(default_config, idx_list)
@@ -571,10 +711,28 @@ def run_teleop_loop(
             )
             ik_goal = robot_base_pose.compute_local_pose(world_target_pose)
             result = motion_gen.plan_single(cu_js.unsqueeze(0), ik_goal, plan_config)
-            print(f"[build_scene] teleop plan_single success={result.success.item()}", flush=True)
+            print(
+                f"[build_scene] teleop plan_single success={result.success.item()} status={result.status}",
+                flush=True,
+            )
             if result.success.item():
                 cmd_plan = motion_gen.get_full_js(result.get_interpolated_plan())
-                cmd_plan = cmd_plan.get_ordered_joint_state(sim_js_names)
+                # GRIPPER ADDITION: reordered to j_names (the arm-only 6,
+                # filtered above), NOT sim_js_names/the full cspace list --
+                # cmd_plan (from get_full_js()) contains cuRobo's own full
+                # joint list (6 arm joints plus both gripper finger joints,
+                # locked and re-inserted as constants), so either ordering
+                # would work without crashing today. Using the arm-only
+                # subset here is deliberate: it keeps this block's
+                # subsequent ArticulationAction (joint_indices=idx_list,
+                # also arm-only) from ever writing to the gripper's own DOF,
+                # avoiding a "two writers" fight against the gripper-
+                # override block below (see this function's own
+                # j_names/idx_list-construction comment for why, and for a
+                # real crash this exact reordering choice fixed earlier,
+                # back when pgc140_finger2_joint was still mimic-excluded
+                # from cuRobo's model but present in sim_js_names).
+                cmd_plan = cmd_plan.get_ordered_joint_state(j_names)
                 cmd_idx = 0
                 interpolation_dt = result.interpolation_dt
                 last_cmd_time = None
@@ -601,6 +759,36 @@ def run_teleop_loop(
                 if cmd_idx >= len(cmd_plan.position):
                     cmd_idx = 0
                     cmd_plan = None
+
+        # GRIPPER ADDITION: independent of cmd_plan/cuRobo -- applied every
+        # frame so it always wins the gripper DOF indices' drive-target
+        # write, even though get_full_js() re-applies configs/curobo/
+        # cr5.yml's lock_joints on every planned frame too. This is pure
+        # code-ordering, not a distinct mechanism: this block MUST run
+        # after the cmd_plan-apply block above, or cuRobo's locked
+        # constant would win instead and C/O would silently do nothing
+        # (mirrors scripts/mefron_lib/teleop.py's own gripper block, which
+        # has the identical ordering dependency for the same reason).
+        if gripper_control is not None and gripper_idx_list:
+            gripper_cfg = cfg["cr5_mount"]["gripper"]
+            gripper_target = (
+                gripper_cfg["closed_position"] if gripper_control.closed else gripper_cfg["open_position"]
+            )
+            if gripper_setpoint is None:
+                gripper_setpoint = gripper_target
+            now = time.time()
+            if last_gripper_time is not None:
+                max_step = gripper_cfg["close_speed"] * (now - last_gripper_time)
+                if gripper_setpoint < gripper_target:
+                    gripper_setpoint = min(gripper_setpoint + max_step, gripper_target)
+                elif gripper_setpoint > gripper_target:
+                    gripper_setpoint = max(gripper_setpoint - max_step, gripper_target)
+            last_gripper_time = now
+            gripper_action = ArticulationAction(
+                np.array([gripper_setpoint] * len(gripper_idx_list)),
+                joint_indices=gripper_idx_list,
+            )
+            articulation_controller.apply_action(gripper_action)
 
 
 def prune_factory_dressing(cfg: dict) -> list[str]:
@@ -732,7 +920,21 @@ def main() -> None:
         return
 
     if motion_gen is not None:
-        run_teleop_loop(cfg, motion_gen, robot_cfg, target, robot_prim_path=robot_prim_path)
+        # Built here (interactive path only, after the _headless early-
+        # return above) since it subscribes to real keyboard input --
+        # scripts/test_teleop_headless.py's own gripper check instead
+        # constructs a bare GripperKeyboardControl() directly and calls
+        # set_closed() on it programmatically, bypassing the keyboard
+        # subscription entirely (see that script for why).
+        gripper_control = build_gripper_keyboard_control()
+        run_teleop_loop(
+            cfg,
+            motion_gen,
+            robot_cfg,
+            target,
+            robot_prim_path=robot_prim_path,
+            gripper_control=gripper_control,
+        )
     else:
         print("[build_scene] cuRobo not installed -- skipping interactive teleop; falling back to a bare update loop.", flush=True)
         while simulation_app.is_running():

@@ -55,11 +55,27 @@
 
 robot_cfg:
   kinematics:
-    urdf_path: "robots/cr5/urdf/cr5_robot.urdf"
-    asset_root_path: "robots/cr5"
+    # GRIPPER ADDITION: urdf_path/asset_root_path now point at the
+    # generated combined CR5+PGC-140 URDF (scripts/generate_cr5_pgc140_urdf.py)
+    # instead of the bare-arm robots/cr5/urdf/cr5_robot.urdf directly --
+    # cuRobo needs one urdf_path describing the whole kinematic chain, the
+    # same way its own bundled franka.yml includes hand+fingers in the
+    # arm's own URDF rather than importing two robots separately. Not yet
+    # verified against a live MotionGen build (see the gripper integration
+    # plan's milestone sequence) -- this repo's own dev environment has no
+    # Isaac Sim/GPU available to check it here.
+    urdf_path: "robots/cr5_pgc140/urdf/combined.urdf"
+    asset_root_path: "robots/cr5_pgc140"
 
     base_link: "base_link"
-    ee_link: "Link6"
+    # Moved off Link6 (the bare arm's own terminal link) to the gripper's
+    # own real-geometry base/body link -- deliberately NOT a synthetic
+    # zero-geometry TCP frame, since scripts/build_scene.py's
+    # build_teleop_target() copies `f"{robot_prim_path}/{ee_link}/visuals"`
+    # to build the draggable teleop target, which needs ee_link to actually
+    # have visual geometry (a synthetic frame would silently reproduce an
+    # empty-bbox failure).
+    ee_link: "pgc140_base_link"
 
     collision_link_names:
       - "base_link"
@@ -69,6 +85,9 @@ robot_cfg:
       - "Link4"
       - "Link5"
       - "Link6"
+      - "pgc140_base_link"
+      - "pgc140_finger1_link"
+      - "pgc140_finger2_link"
     collision_spheres: "cr5_collision_spheres.yml"
     collision_sphere_buffer: 0.005
     # Adjacent-pair entries (base_link-Link1, Link1-Link2, ...) were the
@@ -94,7 +113,33 @@ robot_cfg:
       Link2: ["Link3"]
       Link3: ["Link4", "Link5"]
       Link4: ["Link5", "Link6"]
-      Link5: ["Link6"]
+      Link5: ["Link6", "pgc140_base_link"]
+      # GRIPPER ADDITION -- CONFIRMED LIVE via an all-pairwise sphere-
+      # distance check at retract_config (mirroring the arm's own bug #3
+      # methodology exactly), not just the adjacent-pair first guess this
+      # comment originally described:
+      #   - Link5 <-> pgc140_base_link: real overlap (up to 0.085m). Makes
+      #     sense once you account for the mount transform: this branch's
+      #     Link6-to-gripper fixed joint is currently identity (see
+      #     scripts/generate_cr5_pgc140_urdf.py's MOUNT_ORIGIN_XYZ/_RPY),
+      #     so pgc140_base_link sits exactly coincident with Link6's own
+      #     origin -- it's just as close to Link5 as Link6 already is,
+      #     which is exactly why Link5/Link6 needed an ignore entry in the
+      #     first place. Added above.
+      #   - Link6 <-> pgc140_finger1_link/pgc140_finger2_link: small real
+      #     overlaps (~3.6mm) -- the fingers' own joint origins sit close
+      #     enough to Link6's own spheres to matter even at the correct
+      #     open position. Added below.
+      #   - pgc140_finger1_link <-> pgc140_finger2_link: WAS overlapping
+      #     (0.0194m) at this file's *previous* (incorrect) locked value --
+      #     resolved by fixing retract_config/lock_joints' 7th value to the
+      #     joint's real open position instead (see cspace's own comment)
+      #     rather than by adding an ignore entry here, since at the
+      #     correct open value the fingers are genuinely ~30mm apart (their
+      #     own spheres, r=0.018 each, don't come close to touching) --
+      #     confirmed by re-running the same check after the fix.
+      Link6: ["pgc140_base_link", "pgc140_finger1_link", "pgc140_finger2_link"]
+      pgc140_base_link: ["pgc140_finger1_link", "pgc140_finger2_link"]
     self_collision_buffer:
       base_link: 0.0
       Link1: 0.0
@@ -103,6 +148,9 @@ robot_cfg:
       Link4: 0.0
       Link5: 0.0
       Link6: 0.0
+      pgc140_base_link: 0.0
+      pgc140_finger1_link: 0.0
+      pgc140_finger2_link: 0.0
 
     use_global_cumul: true
     mesh_link_names:
@@ -113,8 +161,28 @@ robot_cfg:
       - "Link4"
       - "Link5"
       - "Link6"
+      - "pgc140_base_link"
+      - "pgc140_finger1_link"
+      - "pgc140_finger2_link"
 
     cspace:
+      # GRIPPER ADDITION: both pgc140_finger1_joint and pgc140_finger2_joint
+      # appended as 7th/8th cspace entries -- matching cuRobo's own bundled
+      # franka.yml convention of tracking both (non-mimic-linked) finger
+      # joints individually, both locked (see lock_joints below).
+      #
+      # The vendored URDF originally had finger2_joint as a real <mimic>
+      # of finger1_joint, which would have excluded it from cuRobo's own
+      # joint_names entirely (cuRobo's URDF kinematics parser drops mimic
+      # joints from joint_names at the parser level) -- but that mimic tag
+      # was REMOVED from robots/pgc140/urdf/pgc140_robot.urdf (see that
+      # directory's SOURCE.md): confirmed live that this pinned Isaac Sim
+      # version imports a prismatic <mimic> as a broken
+      # PhysxMimicJointAPI:rotX (rotational, on a linear joint) with
+      # mangled limits and no attached drive, leaving finger2 stuck at its
+      # own incorrect upper limit regardless of what was commanded. Both
+      # joints are now ordinary, independent prismatic joints, each with
+      # its own correctly-imported linear DriveAPI.
       joint_names:
         - "joint1"
         - "joint2"
@@ -122,6 +190,8 @@ robot_cfg:
         - "joint4"
         - "joint5"
         - "joint6"
+        - "pgc140_finger1_joint"
+        - "pgc140_finger2_joint"
       # All-zeros was the original placeholder here ("a safe default since
       # no real 'ready' pose has been taught yet") -- confirmed live it was
       # NOT safe: a numerical Jacobian at [0,0,0,0,0,0] has singular values
@@ -134,13 +204,56 @@ robot_cfg:
       # the real mounted world -- RobotPedestal, ergo tables) via
       # MotionGen.check_start_state() -- not sourced from any real "taught"
       # ready pose on actual hardware, still a placeholder in that sense.
-      retract_config: [0.0, -0.5, 0.8, 0.0, 0.5, 0.0]
-      null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-      cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      #
+      # GRIPPER ADDITION: the arm's own 6 values are UNCHANGED -- adding
+      # the gripper via a fixed joint doesn't add DOF to the arm itself, so
+      # this retract_config's Jacobian conditioning is not affected by the
+      # gripper's mass (only ee_link moving farther out would change the
+      # Jacobian's linear-velocity terms -- confirmed via a live FK/Jacobian
+      # check at the new ee_link, see this file's own header note). The 7th
+      # and 8th values are both fingers' fully-OPEN position -- matching
+      # cuRobo's own franka.yml convention of locking its gripper near-open,
+      # for the most permissive default collision footprint.
+      #
+      # CONFIRMED LIVE (not the URDF's own naming -- verified by directly
+      # computing each finger link's world position at both joint extremes):
+      # q=0.0 is OPEN (fingers at their spread-apart rest position, ~30mm
+      # from the gripper centerline) and q=0.025 (each joint's own upper
+      # limit) is CLOSED (fingers converged to ~13mm from centerline). An
+      # earlier version of this file had these backwards (locked at 0.025
+      # believing it was "open"), which silently locked the gripper CLOSED
+      # during planning -- caught via the live all-pairwise sphere-distance
+      # check below (pgc140_finger1_link/pgc140_finger2_link's own spheres
+      # overlapped each other at that value, since fingers converge as q
+      # increases -- they don't overlap at the correct open value, q=0.0).
+      retract_config: [0.0, -0.5, 0.8, 0.0, 0.5, 0.0, 0.0, 0.0]
+      null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+      cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       # Placeholder motion-gen limits, not sourced from the CR5 datasheet
       # yet -- see the module-level comment above.
       max_jerk: 500.0
       max_acceleration: 15.0
+
+    # GRIPPER ADDITION: locks both finger joints at their fully-open value
+    # (0.0 -- confirmed live, see cspace.retract_config's own comment above;
+    # an earlier draft had this backwards) during active IK/trajopt
+    # (mirroring cuRobo's own bundled franka.yml's
+    # lock_joints: {"panda_finger_joint1": 0.04, "panda_finger_joint2": 0.04},
+    # which likewise locks both of its non-mimic-linked finger joints
+    # near-open) -- this is what keeps the gripper's own DOF out of the
+    # actively-optimized set while still giving cuRobo's FK/collision model
+    # a concrete position for both. The real, live open/close teleop
+    # control (scripts/build_scene.py's run_teleop_loop()) overrides both
+    # simulated joints' actual positions directly every frame, independent
+    # of whatever this locked value says -- meaning cuRobo's planning-time
+    # collision model always assumes the gripper is open, even while the
+    # real simulated gripper may be closed around a part. This is an
+    # accepted, pre-existing approximation (the working Franka gripper
+    # pipeline has the exact same limitation), not something newly
+    # introduced or fixed here.
+    lock_joints:
+      pgc140_finger1_joint: 0.0
+      pgc140_finger2_joint: 0.0
 
     # No `joint_limits` override key here -- cuRobo has no such field (see
     # the module-level comment above); it reads joint position limits

@@ -1,15 +1,14 @@
 # Adds cuRobo (pinned commit) on top of isaac-cobot-base.
 # build-essential/cmake/git are already present in isaac-cobot-base.
 #
-# Built and smoke-tested (torch + curobo import, CUDA available, tensors on
-# GPU) against a live RTX PRO 4000 Blackwell. TORCH_CUDA_ARCH_LIST is tuned
-# to that GPU -- adjust if deploying to different hardware.
+# Originally built and smoke-tested (torch + curobo import, CUDA available,
+# tensors on GPU) against a live RTX PRO 4000 Blackwell (sm_120).
 #
-# On this cloud GPU box the actual card is an NVIDIA L4 (Ada Lovelace,
-# sm_89, confirmed via `nvidia-smi`), not the RTX PRO 4000 Blackwell above --
-# TORCH_CUDA_ARCH_LIST is set to 8.9+PTX below to match. PTX compatibility is
-# forward-only (older PTX runs on newer GPUs, not the reverse), so the
-# Blackwell-tuned 12.0+PTX kernels would not run at all on this L4.
+# This project's actual cloud GPU assignment has changed three times across
+# sessions on the `dobot` branch -- Blackwell workstation, then an NVIDIA L4
+# (Ada Lovelace, sm_89), now an NVIDIA RTX A6000 (Ampere, sm_86, confirmed
+# via `nvidia-smi --query-gpu=name,compute_cap`). See TORCH_CUDA_ARCH_LIST's
+# own comment below for how that's now handled.
 
 ARG DOCKER_NAME_SUFFIX=""
 FROM isaac-cobot-base${DOCKER_NAME_SUFFIX} AS curobo
@@ -58,12 +57,20 @@ RUN set -euo pipefail && \
 ENV CUDA_HOME=/usr/local/cuda-12.8
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
-# 8.9 targets this cloud box's actual GPU (verified via nvidia-smi: an
-# NVIDIA L4, Ada Lovelace, sm_89). +PTX keeps other architectures working
-# via JIT (forward-compatible only). The RTX PRO 4000 Blackwell workstation
-# this project was originally developed against needs 12.0+PTX instead --
-# adjust back if redeploying there.
-ENV TORCH_CUDA_ARCH_LIST=8.9+PTX
+# cuRobo's own custom CUDA kernels (kinematics_fused_cu etc.) are
+# architecture-locked to whatever TORCH_CUDA_ARCH_LIST is set to here at
+# `pip install` time -- confirmed live that an sm_89-only build fails on
+# an sm_86 card with `torch.AcceleratorError: CUDA error: no kernel image
+# is available for execution on the device` (PTX compatibility is
+# forward-only: sm_89 code doesn't run on sm_86, which is lower, only the
+# reverse). Rather than re-tuning this single-arch value and rebuilding
+# again on a fourth cloud GPU swap, this now targets all three
+# architectures actually seen so far in one fat binary -- costs extra
+# nvcc compile time during this Dockerfile's build, not runtime. +PTX only
+# on the newest (Blackwell) entry, for forward-JIT compatibility with
+# anything newer than that. Covers: Ampere/RTX A6000 (8.6), Ada/L4 (8.9),
+# Blackwell/RTX PRO 4000 (12.0).
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9;12.0+PTX"
 
 # Isaac Sim ships its own torch under omni.isaac.ml_archive/pip_prebundle/,
 # which python.sh's sys.path resolves BEFORE site-packages. Left in place,

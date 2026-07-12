@@ -44,7 +44,16 @@ pipeline above at all; scoped to the generic `scripts/build_scene.py` +
   `robots/cr5/` (vendored URDF+meshes, `SOURCE.md`) and
   `configs/curobo/cr5.yml` + `cr5_collision_spheres.yml` (cuRobo config) are
   the CR5-specific pieces it mounts. `scripts/test_teleop_headless.py` is
-  the headless PASS/FAIL regression test for this whole path.
+  the headless PASS/FAIL regression test for this whole path. The mounted
+  gripper is a second vendored piece, `robots/pgc140/` (URDF+meshes,
+  `SOURCE.md`) — `scripts/generate_cr5_pgc140_urdf.py` splices it onto the
+  CR5 arm into a generated `robots/cr5_pgc140/urdf/combined.urdf`, which is
+  what `configs/curobo/cr5.yml` and `import_cr5.py` actually import/consume
+  (see "Gripper" below — now fully confirmed live, both mounted and
+  standalone). `scripts/pgc140_gripper_probe.py` imports just the PGC-140
+  (no CR5 arm) fixed-base into an empty stage with the same C/O
+  keyboard control as `build_scene.py`'s teleop loop, for isolating the
+  gripper's own open/close behavior from the arm entirely.
 - `examples/curobo_reference/` — pristine, unmodified copy of cuRobo's own
   interactive teleop demo. **Do not modify these two files**; write a
   separate script instead (`scripts/mefron.py` is exactly that). See
@@ -266,25 +275,213 @@ tree for `mantra scanner/STEP_Mantra_Scanner/PCB Assembly.usd`, then run
 variant. All CR5 validation in this branch skipped `build_assembly_parts()`
 entirely rather than chasing this down, since it's orthogonal to the arm.
 
-**Gripper: not yet added.** DH-Robotics (the manufacturer behind "DH
-electric servo gripper") has official URDF+meshes for **AG-95, AG-145,
-PGC-140, and DH3** (`github.com/DH-Robotics/dh_gripper_ros`) but **no USD
-for any model** — same URDF-only situation as the CR5 arm itself. Dobot
-officially lists AG-95/AG-145, PGC-50/140/300, PGE-5/8/15/50, and RGI-14/30
-as CR-series-compatible accessories (Modbus RTU/RS485, optional TCP/IP;
-CR5's controller supports Modbus master natively via the official
-`TCP-IP-CR-Python-V4` SDK). PGE-50-40 specifically is a real, current
-product and is actually the *default* `GripperModel` in DH's own Modbus
-driver — but has no URDF anywhere, unlike AG-95/PGC-140. If/when a gripper
-is added: vendor its URDF the same way `robots/cr5/SOURCE.md` documents
-for the arm, mount it on `Link6`, and expect to re-derive a new
-`retract_config`/collision-sphere set again (adding a gripper changes the
-kinematic chain and mass distribution) — don't assume this branch's
-current `cr5.yml` values carry over unchanged. Also re-check
-`table_layout.yaml`'s `cr5_mount.joint_drive.stiffness`/`damping` (bug #5
-above) once a gripper adds real mass/inertia at `Link6` — `damping=50` was
-derived as exactly critically-damped for the current bare-flange
-configuration specifically, not a generic constant.
+**Gripper: PGC-140 mounted, arm+drag regression passes live, both fingers
+now confirmed reaching their commanded open/closed targets.** DH-Robotics
+has official URDF+meshes for
+**AG-95, AG-145, PGC-140, and DH3** (`github.com/DH-Robotics/dh_gripper_ros`)
+but **no USD for any model** — same URDF-only situation as the CR5 arm
+itself. The originally-targeted **PGE-50-40 has no URDF, USD, or public
+CAD anywhere** (confirmed against DH-Robotics' own repo, a community ROS2
+port, and general web/CAD-site search) despite being a real, current
+product and the *default* `GripperModel` in DH's own Modbus driver — so
+**PGC-140** was substituted: same parallel-jaw (non-adaptive-linkage)
+mechanism as PGE, closest stroke of the four vendor-URDF'd options (50mm
+vs. PGE's 40mm, vs. AG-95/AG-145's 95/145mm), and Dobot's own documented
+CR-series accessory. Tradeoff: PGC-140 is ~2.5x heavier than PGE-50-40
+would have been (~1kg vs ~0.4kg).
+
+Vendored at `robots/pgc140/` (URDF+STL meshes from `dh_gripper_ros`'s
+`dh_pgc140_urdf/`, commit `f59f9c2f4bc8eb116448b1d798791424bf64e337`,
+license **BSD** per that package's `package.xml` — no repo-root `LICENSE`
+file exists upstream to copy verbatim, unlike the CR5's MIT one). Every
+link/joint name was renamed with a `pgc140_` prefix (`SOURCE.md`'s own
+"Modifications made" section) to resolve a confirmed hard collision: both
+the CR5 URDF and the PGC-140 URDF name their root link `base_link`. The
+vendored URDF's own `<mimic joint="pgc140_finger1_joint" .../>` tag on
+`pgc140_finger2_joint` was **removed** (a real, live-confirmed bug in this
+Isaac Sim version — see bug #8 below), not kept — both finger joints are
+now ordinary, independent prismatic joints.
+
+cuRobo needs one `urdf_path` for the whole arm+gripper chain (matches how
+its own bundled `franka.yml` includes hand+fingers in the arm's own URDF),
+so `scripts/generate_cr5_pgc140_urdf.py` splices the two vendored URDFs
+into a generated `robots/cr5_pgc140/urdf/combined.urdf` (mechanically
+generated — regenerate via that script after changing either source,
+don't hand-edit it) via one new fixed joint, `Link6` → `pgc140_base_link`
+(currently an identity transform — a first-draft guess, not yet visually
+confirmed flush against the real mounting face). `configs/curobo/cr5.yml`
+was updated to match: `urdf_path` now points at the combined file,
+`ee_link` moved from `Link6` to `pgc140_base_link` (a real-geometry link,
+not a synthetic TCP frame — `build_teleop_target()` needs `ee_link` to
+have actual `/visuals` content), both `pgc140_finger1_joint` and
+`pgc140_finger2_joint` were added to `cspace` + `lock_joints` (locked
+open — see bug #7 below for why "open" is `0.0`, not the URDF's own
+`upper` value), mirroring `franka.yml`'s convention of tracking both its
+independent finger joints. `import_cr5.py` gained `tune_gripper_drive()`
+(linear, not angular, DriveAPI — the same distinction `mefron_lib/
+robot.py`'s `stiffen_gripper_drive()` draws for the Franka) and
+`filter_gripper_self_collision()` (see bug #9). `build_scene.py`'s
+`run_teleop_loop()` gained C/O keyboard gripper control, ported from
+`mefron_lib/teleop.py`'s pattern — same ramped-setpoint-applied-every-
+frame mechanism, with the arm's own `idx_list`/`cmd_plan` explicitly kept
+gripper-joint-free (a real, confirmed-necessary fix — see bug #6) so the
+gripper-override block is the sole writer for that DOF.
+
+**Confirmed live** (NVIDIA RTX A6000, driver 570.211.01, via
+`${ISAACSIM_ROOT_PATH}/python.sh scripts/test_teleop_headless.py
+--headless`; config tests run the same way via `tests/test_configs.py`'s
+functions called directly, since `pytest` isn't installed and `pip` is
+broken here — see "Must-know gotchas"): the combined URDF imports
+cleanly, `plan_single` succeeds, the arm-drag regression passes
+(`max joint-position delta: 1.1846 rad`), and **both** finger joints now
+reliably reach their commanded target in both directions —
+`pgc140_finger1_joint`/`pgc140_finger2_joint` closed end positions
+`[0.02499904, 0.02492332]` (target `0.025`) and open end positions
+`[0.0, 1.68e-07]` (target `0.0`), both well within the 2mm tolerance. This
+supersedes bug #10 below (now RESOLVED, see its own entry). Four real,
+previously-unknown bugs were found and fixed getting this far (numbered
+continuing from the arm's own list above, all confirmed via the same
+"don't trust it, check it live" discipline that list already
+establishes):
+
+6. **The arm's own `cmd_plan`-apply block was also writing to the
+   gripper's DOF.** `cspace.joint_names` growing to include the gripper
+   joints meant `idx_list`/`j_names` (built directly from that list)
+   included them too — every `interpolation_dt` tick, the arm's periodic
+   waypoint-apply re-asserted cuRobo's `lock_joints` constant onto the
+   gripper's own joint, fighting the gripper-override block's every-frame
+   write. Fixed by filtering the arm's own `idx_list`/`cmd_plan`-reindex
+   down to just the 6 arm joints (`scripts/build_scene.py`'s
+   `run_teleop_loop()`, see its own comment). Confirmed this fix alone
+   does *not* explain the still-open bug #10 below — tried in isolation,
+   zero measurable effect on it.
+7. **The gripper's open/closed convention was backwards.** `q=0` (the
+   URDF's own `lower` limit) is actually the *open* position (fingers
+   spread, ~30mm off the gripper centerline) and `q=0.025` (`upper`) is
+   *closed* (fingers converged to ~13mm) — confirmed by directly computing
+   each finger's world position at both extremes via each joint's own
+   `<origin rpy=.../>`. An earlier draft had `retract_config`/
+   `lock_joints`/`table_layout.yaml`'s `open_position`/`closed_position`
+   all backwards, silently locking the gripper *closed* during planning
+   (the opposite of the intended "most permissive default collision
+   footprint"), and self-collided the two fingers' own spheres against
+   each other at that (actually-closed) locked value —
+   `MotionGenStatus.INVALID_START_STATE_SELF_COLLISION` on every
+   `plan_single` call. Fixed in `configs/curobo/cr5.yml`,
+   `configs/scene/table_layout.yaml`, and `tests/test_configs.py`
+   together; also needed two new `self_collision_ignore` entries found via
+   the same all-pairwise sphere-distance check bug #3 used (`Link5`↔
+   `pgc140_base_link`, `Link6`↔ both finger links — confirmed live, zero
+   overlapping pairs remain).
+8. **The URDF importer mis-imports a prismatic `<mimic>` tag.**
+   `pgc140_finger2_joint`'s vendored `<mimic>` tag got imported as
+   `PhysxMimicJointAPI:rotX` — a *rotational* mimic API applied to what is
+   actually a *linear* joint — with mangled limits (`lower=-0.005,
+   upper=0.030` instead of the URDF's own `0`/`0.025`) and no
+   `UsdPhysics.DriveAPI` attached at all, confirmed by direct USD
+   introspection right after import. Fixed by removing the `<mimic>` tag
+   from `robots/pgc140/urdf/pgc140_robot.urdf` entirely (see that
+   directory's `SOURCE.md`) and treating both finger joints as ordinary,
+   independently-driven joints — the same pattern already proven for the
+   Franka's own two (never mimic-linked) finger joints.
+9. **`import_cr5()`'s `self_collision=False` does not actually author any
+   USD-level self-collision exclusion.** Confirmed by introspecting the
+   imported stage directly: neither a `PhysxArticulationAPI.
+   enabledSelfCollisions` attribute nor any `UsdPhysics.FilteredPairsAPI`
+   relationship exists anywhere under the articulation root, despite this
+   import setting. Same "importer setting doesn't reliably land" pattern
+   as bug #5's drive strength/damping. Fixed by explicitly authoring a
+   `FilteredPairsAPI` exclusion between the two finger links
+   (`import_cr5.py`'s `filter_gripper_self_collision()`) — a real,
+   worthwhile fix on its own terms, but **confirmed live it does NOT
+   explain bug #10 below** (applied in isolation, zero change to that
+   symptom).
+
+**RESOLVED (bug #10):** previously, commanding both finger joints closed
+reliably left `pgc140_finger1_joint` stuck at a small, exactly-repeatable
+intermediate position (~0.0089) while `pgc140_finger2_joint` reached its
+own target cleanly — direction-dependent (which finger stalled flipped
+between open and close). `import_cr5.py`'s `disable_gripper_finger_gravity()`
+(direction-dependent steady-state offset under a P+D-only acceleration-mode
+drive matches a constant-disturbance signature; the two fingers' motion
+axes are deliberately mirrored, so gravity's component along each finger's
+own axis differs between them — see that function's own docstring for the
+full reasoning) was written to fix this but, as of the last update to this
+file, had not yet been confirmed live. **Now confirmed live, on two
+independent paths**: (1) `scripts/test_teleop_headless.py --headless` on
+the full CR5+gripper articulation — both directions now PASS within the
+2mm tolerance (see the "Confirmed live" paragraph above); (2)
+`scripts/pgc140_gripper_probe.py --headless` — the gripper *alone* (no CR5
+arm, same `tune_gripper_drive()`/`filter_self_collision_from_curobo_config()`/
+`disable_gripper_finger_gravity()` calls reused directly from
+`import_cr5.py`) also closes/opens both fingers cleanly (`[0.02499996,
+0.02499996]` closed, `[0.0, 0.0]` open) — confirming the fix isn't an
+artifact of anything CR5-mount-specific, and that the gripper's own
+tuning is correct in isolation too.
+
+Building that standalone probe surfaced two new, previously-unknown bugs
+in the *general* URDF-import pipeline (not gripper-specific, but only ever
+exercised via `build_scene.py`'s full pipeline before, which happens to
+route around both by construction — see each entry):
+
+10. **`MovePrim` inside `import_cr5()` never checks its own return status,
+    and silently no-ops if the destination's parent prim doesn't exist
+    yet.** `build_scene.py`'s real pipeline never hits this: its
+    `build_factory()` calls `add_reference_to_stage(usd_path=...,
+    prim_path="/World/Factory")` before `mount_cr5()` ever runs, and that
+    utility defines any missing ancestor prims of its target path as a
+    side effect, so `/World` always already exists by the time
+    `import_cr5()`'s own `MovePrim(path_from=imported_prim_path,
+    path_to=prim_path)` runs. `scripts/pgc140_gripper_probe.py`'s bare
+    stage has no such prior step, so `/World` never existed — confirmed
+    live via direct command tracing that `URDFParseAndImportFile` returned
+    `imported_prim_path='/pgc140_robot'` (a stage-root sibling, matching
+    the URDF's own `<robot name=...>`) and `MovePrim` to `/World/GripperProbe`
+    silently failed, leaving `prim_path` a valid but permanently childless
+    prim while the real link/joint hierarchy stayed behind, unmoved, at
+    `/pgc140_robot`. The resulting `SingleArticulation()` call then failed
+    with `AttributeError: 'NoneType' object has no attribute
+    'is_homogeneous'` — reads exactly like the physics-view-timing race
+    the "Must-know gotchas" section already documents, but isn't one (more
+    settle frames had zero effect, since nothing was ever going to move
+    into place no matter how long the wait — only tracing the raw
+    command's own return value surfaced the real cause). Fixed in
+    `scripts/pgc140_gripper_probe.py` by explicitly defining `/World` via
+    `UsdGeom.Xform.Define()` before importing — see "Must-know gotchas"
+    below for the general-purpose version of this gotcha.
+11. **`URDFParseAndImportFile`'s asset population runs a beat behind the
+    command's own return** (its `isaacsim.asset.importer.urdf` "Creating
+    Asset in an in-memory stage" log line was observed printing after
+    code that already assumed the import had finished) — `build_scene.py`'s
+    real pipeline never notices because `setup_curobo_motion_gen()`'s
+    `motion_gen.warmup()` (~30s) always runs between `import_cr5()` and the
+    first `SingleArticulation` build, incidentally giving the async import
+    plenty of time; `pgc140_gripper_probe.py` has no such gap. Fixed with
+    an explicit `120`-frame `simulation_app.update()` pump right after
+    import, the same convention `build_scene.py`'s `build_factory()`
+    already uses for the (also asynchronous) factory backdrop reference.
+
+**Still open, not yet checked live:**
+- `cr5_collision_spheres.yml`'s three gripper-link sphere sets are rough,
+  joint-origin-derived placeholders, not fit to real mesh geometry.
+- `table_layout.yaml`'s `cr5_mount.gripper.joint_drive.stiffness`/`damping`
+  reuse the arm's own `625.0`/`50.0` as a starting placeholder, not
+  re-derived — plausibly fine as-is (both are acceleration-mode drives,
+  which divide out effective inertia, so mass alone doesn't necessitate
+  new numbers), and now indirectly confirmed reasonable by bug #10's own
+  resolution (both fingers converge cleanly to their targets with these
+  values), but still not independently re-derived via per-joint
+  planned-vs-measured velocity logging the way bug #5's arm values were.
+- `maxForce` (`table_layout.yaml`'s `cr5_mount.gripper.max_force: 140.0`,
+  matching the URDF's own `effort="140"`) was confirmed to land correctly
+  via direct DriveAPI read-back in isolation (a bare gripper-only import,
+  no arm) — not yet re-confirmed on the full combined articulation.
+- The `Link6`↔`pgc140_base_link` mount transform (identity) is still an
+  unverified first-draft guess — dial in visually in the GUI the same way
+  `cr5_mount.position` itself was, then recompute `teleop_target.position`/
+  `orientation_wxyz` (currently numerically correct *only* because the
+  mount transform happens to be identity right now — see that config's own
+  comment).
 
 ## Must-know gotchas
 
@@ -365,6 +562,35 @@ configuration specifically, not a generic constant.
   JIT-compile (needs `ninja`) on a torch ABI mismatch; `pip install`
   itself doesn't work here. Fixed via `apt-get install ninja-build` — see
   `docs/docker-and-devcontainer.md`.
+- **`MovePrim` silently no-ops if the destination's parent doesn't exist,
+  and `import_cr5()`/similar importer wrappers don't check its return
+  status.** A bare/anonymous stage (e.g. a headless script that never
+  calls `add_reference_to_stage()` first) may have no `/World` prim at
+  all — importing a robot at `prim_path="/World/Something"` then leaves
+  the real content behind, unmoved, at wherever
+  `URDFParseAndImportFile` actually put it (a stage-root sibling matching
+  the URDF's own `<robot name=...>`), while the intended path is a valid
+  but permanently empty prim. The resulting `SingleArticulation()` call
+  fails with `AttributeError: 'NoneType' object has no attribute
+  'is_homogeneous'`/`'link_names'` — reads exactly like the physics-view-
+  timing race below, but isn't; more settle frames won't fix it. Confirm
+  by tracing the raw `omni.kit.commands.execute("URDFParseAndImportFile",
+  ...)` return value directly if a "did not match any rigid bodies"
+  PhysX error shows up. Fix: `UsdGeom.Xform.Define(stage, "/World")` (or
+  whatever the target's parent is) before importing — see
+  `scripts/pgc140_gripper_probe.py`'s `spawn_gripper_probe()` and CR5
+  validation's bug #10 above.
+- **`URDFParseAndImportFile`'s asset population is asynchronous** — the
+  command returns a prim path immediately, but the stage isn't actually
+  populated yet (confirmed live: its own "Creating Asset in an in-memory
+  stage" log line printed *after* code that already assumed the import
+  had finished). `build_scene.py`'s real pipeline never notices because
+  `motion_gen.warmup()` (~30s) always runs first, incidentally giving it
+  time; a script that imports and immediately builds a
+  `SingleArticulation` with nothing in between needs an explicit
+  `simulation_app.update()` pump after import (see `build_factory()`'s
+  120-frame pump for the same reasoning applied to the factory backdrop
+  reference, and CR5 validation's bug #11 above).
 
 ## Pinned versions
 

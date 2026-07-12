@@ -64,12 +64,15 @@ _headless = "--headless" in sys.argv
 if __name__ == "__main__":
     simulation_app = SimulationApp({"headless": _headless})
 
+import omni.physx  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleArticulation  # noqa: E402
-from pxr import UsdPhysics  # noqa: E402
+from isaacsim.core.utils.types import ArticulationAction  # noqa: E402
+from pxr import UsdGeom, UsdPhysics  # noqa: E402
 
 import build_scene  # noqa: E402
+import import_cr5  # noqa: E402
 
 # Small enough to stay within reach of the target's own starting pose (see
 # table_layout.yaml's teleop_target comment -- that starting pose is itself
@@ -97,7 +100,20 @@ _DRAG_OFFSET = np.array([0.0, 0.02, 0.02])
 # absorb a slower/faster machine changing how many step_index ticks fit in
 # the same real-world interpolation_dt window (the gate is wall-clock-timed,
 # not step-count-timed -- see run_teleop_loop's own comment).
-_MAX_ITERATIONS = 3000
+#
+# GRIPPER ADDITION -- CONFIRMED LIVE 3000 is no longer enough once the arm
+# plan actually succeeds (it was failing outright before an unrelated
+# self-collision fix, which meant every iteration was cheap -- no real
+# physics/dynamics work to do -- so the gripper's own wall-clock-gated ramp
+# had the whole budget to itself and finished easily). Once the arm is
+# actually tracking a real trajectory, each simulation_app.update() does
+# more physics work and real time elapses more slowly per iteration;
+# empirically, only ~0.68s of the gripper's needed 1.25s ramp
+# (0.025m / 0.02 m/s) elapsed by iteration 3000 with the arm plan
+# succeeding. Raised to give real headroom -- re-confirm this is still
+# enough if the arm-side per-iteration cost changes again (e.g. a heavier
+# scene, different hardware).
+_MAX_ITERATIONS = 8000
 # Must clear build_scene._TELEOP_INIT_FRAMES (10) + _TELEOP_SETTLE_FRAMES
 # (20) before the simulated drag lands, so run_teleop_loop's debounce logic
 # sees a genuinely static target first, same as a real pre-drag pause would.
@@ -150,8 +166,20 @@ def main() -> None:
     # need for a separate SingleArticulation just to observe it (see this
     # module's own docstring for why that would break run_teleop_loop's own
     # later one).
-    j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
-    start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    # ARM-only subset: cspace.joint_names/retract_config now also include
+    # the gripper's own driven joint (configs/curobo/cr5.yml's
+    # pgc140_finger1_joint), but this check's purpose is specifically "did
+    # the arm move in response to the simulated drag." Excluding the
+    # gripper joint here keeps that meaning intact regardless of what the
+    # gripper is simultaneously commanded to do below -- a naive shared
+    # max_delta across both would let the gripper's own, unrelated closing
+    # motion mask a genuine arm-teleop regression (a broken arm could still
+    # show a false PASS purely from the gripper closing).
+    all_j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
+    all_retract_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    arm_mask = [name not in import_cr5.GRIPPER_JOINT_NAMES for name in all_j_names]
+    j_names = [name for name, is_arm in zip(all_j_names, arm_mask) if is_arm]
+    start_positions = all_retract_config[arm_mask]
 
     start_position, start_orientation = target.get_world_pose()
     dragged_position = start_position + _DRAG_OFFSET
@@ -166,8 +194,31 @@ def main() -> None:
 
     target.get_world_pose = fake_get_world_pose
 
+    # GRIPPER ADDITION: constructed directly rather than via
+    # build_scene.build_gripper_keyboard_control() (which subscribes to
+    # real keyboard input, unavailable/unnecessary headless) and commanded
+    # programmatically -- mirrors how this script already fakes the arm's
+    # drag via monkeypatching target.get_world_pose() rather than
+    # simulating real mouse input. Commanded closed from the very start of
+    # the run (not mid-run) so the whole _MAX_ITERATIONS budget is
+    # available for the ramp to reach its target -- NOT yet confirmed live
+    # that this is actually enough real wall-clock time (the ramp is gated
+    # on time.time(), not iteration count); if this assertion below turns
+    # out to fail solely because the ramp hadn't finished yet, that's a
+    # test-budget problem, not a functional one -- increase _MAX_ITERATIONS
+    # or add a dedicated post-loop settle period rather than loosening the
+    # tolerance.
+    gripper_control = build_scene.GripperKeyboardControl()
+    gripper_control.set_closed(True)
+
     build_scene.run_teleop_loop(
-        cfg, motion_gen, robot_cfg, target, robot_prim_path=robot_prim_path, max_iterations=_MAX_ITERATIONS
+        cfg,
+        motion_gen,
+        robot_cfg,
+        target,
+        robot_prim_path=robot_prim_path,
+        max_iterations=_MAX_ITERATIONS,
+        gripper_control=gripper_control,
     )
 
     # Only constructed now, after run_teleop_loop's own internal
@@ -183,6 +234,94 @@ def main() -> None:
         print("[test_teleop_headless] FAIL: robot did not move meaningfully in response to the simulated drag.", flush=True)
     else:
         print("[test_teleop_headless] PASS: robot followed the simulated drag.", flush=True)
+
+    # GRIPPER ADDITION: doesn't exist even for the Franka pipeline
+    # currently (docs/mefron-history.md notes this as a known gap there
+    # too) -- reads back real, simulated joint positions the same way as
+    # the arm check above, rather than trusting the commanded setpoint.
+    gripper_cfg = cfg["cr5_mount"]["gripper"]
+    closed_target = gripper_cfg["closed_position"]
+    gripper_tolerance = 0.002  # 2mm -- small relative to the 25mm full stroke
+    driven_joint_names = [name for name in import_cr5.GRIPPER_JOINT_NAMES if name in robot.dof_names]
+    if not driven_joint_names:
+        print(
+            "[test_teleop_headless] SKIP: no gripper joint present on this "
+            "articulation (no gripper mounted, or names don't match robots/pgc140/ -- check import_cr5.GRIPPER_JOINT_NAMES).",
+            flush=True,
+        )
+    else:
+        gripper_idx_list = [robot.get_dof_index(name) for name in driven_joint_names]
+        gripper_end_positions = robot.get_joint_positions(gripper_idx_list)
+        print(
+            f"[test_teleop_headless] gripper joints {driven_joint_names} end positions: {gripper_end_positions} "
+            f"(target: {closed_target})",
+            flush=True,
+        )
+        if np.max(np.abs(gripper_end_positions - closed_target)) > gripper_tolerance:
+            print(
+                "[test_teleop_headless] FAIL: gripper did not reach the commanded closed position -- "
+                "see this script's own comment above if this is purely a ramp-timing budget issue.",
+                flush=True,
+            )
+        else:
+            print("[test_teleop_headless] PASS: gripper closed to the commanded position.", flush=True)
+        if len(driven_joint_names) == 1:
+            print(
+                "[test_teleop_headless] NOTE: only pgc140_finger1_joint is an independent DOF on this "
+                "articulation -- pgc140_finger2_joint is presumably PhysX-mimic-constrained and was not "
+                "independently checked here; confirm visually in the GUI that it actually tracked finger1.",
+                flush=True,
+            )
+
+        # GRIPPER ADDITION: open-direction check, previously untested --
+        # the user reported (live, in the GUI) that motion is sequential
+        # and *reverses direction* between opening and closing, so a
+        # close-only check can't tell the two directions apart. Drives the
+        # already-constructed `robot` directly (bypassing run_teleop_loop's
+        # ramp/cmd_plan machinery entirely -- this is a raw, direct
+        # ArticulationAction loop) rather than a second full
+        # run_teleop_loop() call, since a second call would re-trigger its
+        # own Stop/Play-style rebuild and snap instantly rather than
+        # ramping, defeating the point of watching real settled behavior.
+        open_target = gripper_cfg["open_position"]
+        for _ in range(_MAX_ITERATIONS):
+            simulation_app.update()
+            action = ArticulationAction(
+                np.array([open_target] * len(gripper_idx_list)), joint_indices=gripper_idx_list
+            )
+            robot.get_articulation_controller().apply_action(action)
+        gripper_open_positions = robot.get_joint_positions(gripper_idx_list)
+        print(
+            f"[test_teleop_headless] gripper joints {driven_joint_names} OPEN end positions: "
+            f"{gripper_open_positions} (target: {open_target})",
+            flush=True,
+        )
+        if np.max(np.abs(gripper_open_positions - open_target)) > gripper_tolerance:
+            print("[test_teleop_headless] FAIL: gripper did not reach the commanded open position.", flush=True)
+        else:
+            print("[test_teleop_headless] PASS: gripper opened to the commanded position.", flush=True)
+
+        # GRIPPER ADDITION: direct PhysX overlap query at the settled-open
+        # state, to see exactly what (if anything) each finger is
+        # contacting -- answers "what is it touching" directly instead of
+        # continuing to infer from joint-position symptoms alone.
+        bbox_cache = UsdGeom.BBoxCache(0, ["default"], useExtentsHint=False)
+        sq = omni.physx.get_physx_scene_query_interface()
+        for link in ["pgc140_finger1_link", "pgc140_finger2_link"]:
+            prim = stage.GetPrimAtPath(f"{robot_prim_path}/{link}")
+            bbox = bbox_cache.ComputeWorldBound(prim)
+            r = bbox.ComputeAlignedRange()
+            center = [(r.GetMin()[i] + r.GetMax()[i]) / 2 for i in range(3)]
+            half_extent = [(r.GetMax()[i] - r.GetMin()[i]) / 2 + 0.005 for i in range(3)]
+            hits = []
+
+            def _report_hit(hit, hits=hits):
+                hits.append((hit.rigid_body, hit.collision))
+                return True
+
+            sq.overlap_box(half_extent, center, [0, 0, 0, 1], _report_hit, False)
+            other = [rb for rb, _ in hits if link not in rb]
+            print(f"[test_teleop_headless] {link} OPEN-state overlaps (excluding self): {other}", flush=True)
 
     simulation_app.close()
 
