@@ -483,6 +483,50 @@ route around both by construction — see each entry):
   mount transform happens to be identity right now — see that config's own
   comment).
 
+**Grasp Editor asset (gripper-only, no arm)**: `assets/grasp_editor_tutorial/`
+is NVIDIA's own official Grasp Editor Tutorial sample content (a
+`grasp_editor_tutorial.usd` stage + `Isaac/Robots/Franka/` assets) — used
+successfully elsewhere in this repo already (`scripts/mefron_lib/config.py`'s
+`GRASP_EDITOR_YAML_PATH`/`GRASP_NAME`, consumed by `mefron.py`'s J key),
+unlike the *different*, abandoned in-repo attempt against `mefron.usd`'s own
+broken Franka import (see `docs/grasp-and-assembly-offsets.md`). Confirmed
+live by direct USD introspection: `grasp_editor_tutorial.usd` never actually
+references `Isaac/Robots/Franka/franka.usd` (the full arm, unused); it
+builds `/World/panda_hand` directly instead — the Franka hand+fingers only,
+physics joints authored right there in that stage, geometry pulled from
+`Isaac/Robots/Franka/Props/*.usd`.
+`scripts/generate_cr5_gripper_grasp_editor_usd.py` produces the CR5
+analogue of that same `/World/panda_hand` role: a standalone, self-contained
+`assets/grasp_editor_tutorial/Grasp_Editor_Tutorial_Stage/Isaac/Robots/CR5/cr5_gripper.usd`
+(default prim `/cr5_gripper`, geometry + physics both baked in — no
+separate Props files, an organizational nicety the Franka assets happen to
+use but don't require) built by importing `robots/pgc140/urdf/pgc140_robot.urdf`
+via `import_cr5()` into an anonymous stage, applying the same
+`tune_gripper_drive()`/`filter_self_collision_from_curobo_config()`/
+`disable_gripper_finger_gravity()` calls `build_scene.py`'s `mount_cr5()`
+uses, then extracting just that prim's subtree via `Sdf.CopySpec()`.
+**Confirmed live**: referencing the resulting file into a fresh stage and
+building a `SingleArticulation` on it produces a real, working 2-DOF
+articulation (`dof_names=['pgc140_finger1_joint', 'pgc140_finger2_joint']`).
+Getting a correct export required two real, previously-unknown bugs of its
+own, both about USD composition rather than physics:
+- `Sdf.CopySpec()` only copies a prim's raw, uncomposed spec — each link's
+  own `visuals`/`collisions` Xform is actually just an internal reference
+  arc (`SdfReference` with no asset path, just an `SdfPath`) to a sibling
+  root-level `/visuals/<link>`, `/colliders/<link>` scope (a dedup
+  mechanism the URDF importer uses for shared geometry across links).
+  Copying only the robot's own subtree left those references dangling in
+  the destination file — confirmed live, the first exported file's
+  `visuals`/`collisions` Xforms had zero children, no `Mesh` anywhere.
+- `Usd.Stage.Flatten()` does **not** fix this — confirmed live it flattens
+  the sublayer stack, not reference/payload composition arcs; the
+  flattened layer's own `/visuals` scope still existed as a separate root
+  prim, with the reference arc pointing to it still unresolved.
+  Fixed (not by flattening) by also copying the root-level `/visuals`,
+  `/colliders`, `/meshes` scopes themselves into the destination file, at
+  the same absolute paths the existing reference arcs already point to, so
+  those references resolve correctly in the new self-contained file.
+
 ## Must-know gotchas
 
 - **cuRobo joint velocity/accel/jerk limits reject zero silently until
