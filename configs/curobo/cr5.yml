@@ -32,14 +32,26 @@
 #      cuRobo will silently look inside its own install instead of this
 #      repo.
 #
-# The CR5 URDF's `effort="0" velocity="0"` joints (a SolidWorks-exporter
-# artifact, see ../../robots/cr5/SOURCE.md) turned out not to block cuRobo
-# loading at all -- cuRobo's kinematics parsing doesn't appear to reject
-# zero velocity/effort the way it might have been expected to. That's
+# CORRECTION (superseding the paragraph this replaces): the CR5 URDF's
+# original `effort="0" velocity="0"` joints (a SolidWorks-exporter artifact,
+# see ../../robots/cr5/SOURCE.md) do NOT merely fail to block cuRobo loading
+# -- MotionGenConfig.load_from_robot_config() reaches all the way into
+# TrajOptSolverConfig -> ArmReacher -> ArmBase -> bound_cost.set_bounds(),
+# which hard-fails with `ValueError: Joint velocity limits is zero` the
+# first time it's actually exercised (this wasn't caught by the earlier
+# "loads without error" testing this comment used to describe, which
+# apparently never got as far as building the full MotionGen). There is no
+# config-level override for this -- cuRobo has no `cspace.max_velocity` key
+# (confirmed against cuda_robot_generator.py's
+# _get_joint_position_velocity_limits(), which reads straight from the
+# URDF) -- so the fix had to go into the URDF itself:
+# ../../robots/cr5/urdf/cr5_robot.urdf's six `velocity="0"` values are now
+# `velocity="3.14"` (180 deg/s, Dobot's published CR5 joint speed spec,
+# see ../../robots/cr5/SOURCE.md). `effort="0"` was left alone -- it's
 # still worked around separately for the *Isaac Sim articulation drive* at
 # import time (URDFImporterConfig(default_drive_strength=1e5), see
-# ../../scripts/import_cr5.py) -- a different concern (holding a
-# commanded pose in sim) from cuRobo's own motion-gen math.
+# ../../scripts/import_cr5.py), and cuRobo's own bound_cost never reads
+# `effort` at all, only `velocity`/`acceleration`/`jerk`.
 
 robot_cfg:
   kinematics:
@@ -59,12 +71,29 @@ robot_cfg:
       - "Link6"
     collision_spheres: "cr5_collision_spheres.yml"
     collision_sphere_buffer: 0.005
+    # Adjacent-pair entries (base_link-Link1, Link1-Link2, ...) were the
+    # original first-draft guess. Confirmed live (all-pairwise sphere-
+    # distance check at the all-zero retract_config, the only pose
+    # exercised so far) that this list was incomplete: at that
+    # configuration the CR5's joint origins fold several *non*-adjacent
+    # links into close proximity too (e.g. joint2's origin has zero
+    # offset from joint1's frame, so Link1 and Link2 sit exactly
+    # coincident at q=0) -- base_link/Link2, Link3/Link5, and Link4/Link6
+    # all had genuinely overlapping placeholder spheres, causing
+    # MotionGenStatus.INVALID_START_STATE_SELF_COLLISION. This was masked
+    # until a separate world-collision bug (base_link's sphere dipping
+    # into RobotPedestal, see cr5_collision_spheres.yml) was fixed first --
+    # the self-collision check never got a chance to report before that.
+    # Added the three skip-one pairs below to match reality, same as
+    # cuRobo's own bundled ur5e.yml routinely ignores multiple non-
+    # adjacent pairs too (see ur5e.yml's own self_collision_ignore) --not
+    # unique to this being a rough placeholder sphere set.
     self_collision_ignore:
-      base_link: ["Link1"]
+      base_link: ["Link1", "Link2"]
       Link1: ["Link2"]
       Link2: ["Link3"]
-      Link3: ["Link4"]
-      Link4: ["Link5"]
+      Link3: ["Link4", "Link5"]
+      Link4: ["Link5", "Link6"]
       Link5: ["Link6"]
     self_collision_buffer:
       base_link: 0.0
@@ -93,9 +122,19 @@ robot_cfg:
         - "joint4"
         - "joint5"
         - "joint6"
-      # All-zeros home pose -- a safe default since no real "ready" pose
-      # has been taught yet. Replace once a known-good retract pose exists.
-      retract_config: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      # All-zeros was the original placeholder here ("a safe default since
+      # no real 'ready' pose has been taught yet") -- confirmed live it was
+      # NOT safe: a numerical Jacobian at [0,0,0,0,0,0] has singular values
+      # [48989.8, 0.95, 2.65e-08, 7.79e-17, 7.16e-25, 3.86e-41] -- rank ~2
+      # instead of 6, a severe kinematic singularity that made
+      # MotionGen.plan_single() fail IK for essentially any nearby target.
+      # Replaced with a bent-elbow pose, chosen only for well-conditioned
+      # kinematics (Jacobian condition number ~47 here vs ~5e16 at all-
+      # zero) and confirmed collision-free (both self-collision and against
+      # the real mounted world -- RobotPedestal, ergo tables) via
+      # MotionGen.check_start_state() -- not sourced from any real "taught"
+      # ready pose on actual hardware, still a placeholder in that sense.
+      retract_config: [0.0, -0.5, 0.8, 0.0, 0.5, 0.0]
       null_space_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       cspace_distance_weight: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
       # Placeholder motion-gen limits, not sourced from the CR5 datasheet

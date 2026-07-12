@@ -19,10 +19,27 @@ raising).
 
 Run standalone:
     ${ISAACSIM_ROOT_PATH}/python.sh scripts/build_scene.py
+(opens the full local GUI experience, isaacsim.exp.full.kit)
+
+Add --livestream to stream the scene remotely instead, by loading the same
+isaacsim.exp.full.streaming.kit experience file
+/isaac-sim/isaac-sim.streaming.sh uses -- connect with whichever client you
+already used for that script. Don't run isaac-sim.streaming.sh at the same
+time; this invocation replaces it (both would try to bind the same
+streaming session). --headless (used by test_teleop_headless.py) stays a
+separate, minimal-experience fast check.
+
+hide_ui=False is required alongside headless=True here: SimulationApp's own
+wrapper auto-appends --/app/window/hideUi=1 whenever headless=True and
+hide_ui isn't explicitly set (see isaacsim/simulation_app/simulation_app.py's
+_start_app), which is what silently drops the full UI down to viewport-only
+-- isaac-sim.streaming.sh doesn't hit this because it invokes the Kit binary
+directly, bypassing this Python wrapper's default entirely.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,8 +48,23 @@ import yaml
 from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
+_livestream = "--livestream" in sys.argv
 if __name__ == "__main__":
-    simulation_app = SimulationApp({"headless": _headless})
+    if _livestream:
+        experience = f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.streaming.kit'
+    elif _headless:
+        experience = ""
+    else:
+        experience = f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
+    launch_config = {"headless": _headless or _livestream}
+    if _livestream:
+        launch_config["hide_ui"] = False
+    simulation_app = SimulationApp(launch_config, experience=experience)
+
+# Must run before any omni/curobo import -- see mefron_lib/kit_bootstrap.py's docstring.
+from mefron_lib.kit_bootstrap import preload_real_packaging  # noqa: E402
+
+preload_real_packaging()
 
 import omni.kit.commands  # noqa: E402
 import omni.timeline  # noqa: E402
@@ -332,6 +364,8 @@ def run_teleop_loop(
     Isaac Sim window closes); set to a finite number for headless
     scripted verification (see the module's own testing notes).
     """
+    import time
+
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose
     from curobo.types.state import JointState
@@ -387,7 +421,14 @@ def run_teleop_loop(
     # like the reference example (which only calls
     # robot._articulation_view.initialize() once my_world.is_playing()),
     # defer this until the loop below confirms physics is actually running.
-    robot = SingleArticulation(prim_path=robot_prim_path, name="teleop_robot")
+    #
+    # robot/idx_list/articulation_controller are all rebuilt from scratch on
+    # every fresh Play (see the `was_playing` handling below), not just the
+    # first one -- a SingleArticulation is only valid for the PhysX
+    # simulation view that existed when it was built, and clicking Stop
+    # tears that view down (see CLAUDE.md's "Stop/Play rebuild" gotcha and
+    # mefron_lib/teleop.py's run_teleop_loop(), which this mirrors).
+    robot = None
     idx_list = None
     articulation_controller = None
 
@@ -397,18 +438,49 @@ def run_teleop_loop(
     target_orientation = None
     cmd_plan = None
     cmd_idx = 0
+    # This specific plan's intended per-waypoint duration (MotionGenResult-level,
+    # not MotionGen-level) -- read from result.interpolation_dt once a plan
+    # succeeds, not hardcoded, so waypoints get applied paced to real elapsed
+    # time instead of one per simulation_app.update() call. Without this gate,
+    # a frame rate faster than cuRobo assumed when building the plan drives the
+    # joint targets forward faster than the arm can physically track them,
+    # producing a visible oscillating catch-up ("jogs" before reaching the
+    # target) instead of smooth motion -- see mefron_lib/teleop.py's own
+    # run_teleop_loop(), which already has this fix; this port of
+    # examples/curobo_reference/motion_gen_reacher.py's loop never did.
+    last_cmd_time = None
+    interpolation_dt = None
     obstacles = None
     step_index = 0
     not_playing_frames = 0
+    was_playing = False
 
     while simulation_app.is_running():
         simulation_app.update()
 
         if not timeline.is_playing():
+            was_playing = False
             not_playing_frames += 1
             if not_playing_frames % 100 == 0:
                 print("[build_scene] Click Play to start cuRobo teleop.", flush=True)
             continue
+
+        if not was_playing:
+            # Fresh Play (first ever, or after a Stop) -- rebuild everything
+            # bound to the previous physics view instead of reusing stale
+            # handles into a torn-down one.
+            idx_list = None
+            articulation_controller = None
+            past_pose = None
+            past_orientation = None
+            target_pose = None
+            target_orientation = None
+            cmd_plan = None
+            cmd_idx = 0
+            last_cmd_time = None
+            obstacles = None
+            step_index = 0
+            was_playing = True
 
         # step_index only advances on frames where physics is actually
         # stepping -- matching World.current_time_step_index in the
@@ -423,6 +495,7 @@ def run_teleop_loop(
             return
 
         if idx_list is None:
+            robot = SingleArticulation(prim_path=robot_prim_path, name="teleop_robot")
             robot.initialize()
             idx_list = [robot.get_dof_index(x) for x in j_names]
             articulation_controller = robot.get_articulation_controller()
@@ -483,6 +556,8 @@ def run_teleop_loop(
                 cmd_plan = motion_gen.get_full_js(result.get_interpolated_plan())
                 cmd_plan = cmd_plan.get_ordered_joint_state(sim_js_names)
                 cmd_idx = 0
+                interpolation_dt = result.interpolation_dt
+                last_cmd_time = None
             target_pose = cube_position
             target_orientation = cube_orientation
 
@@ -490,17 +565,22 @@ def run_teleop_loop(
         past_orientation = cube_orientation
 
         if cmd_plan is not None:
-            cmd_state = cmd_plan[cmd_idx]
-            art_action = ArticulationAction(
-                cmd_state.position.cpu().numpy(),
-                cmd_state.velocity.cpu().numpy(),
-                joint_indices=idx_list,
-            )
-            articulation_controller.apply_action(art_action)
-            cmd_idx += 1
-            if cmd_idx >= len(cmd_plan.position):
-                cmd_idx = 0
-                cmd_plan = None
+            # Gate on real elapsed time, not frame count -- see this
+            # function's own state-init comment for why.
+            now = time.time()
+            if last_cmd_time is None or (now - last_cmd_time) >= interpolation_dt:
+                cmd_state = cmd_plan[cmd_idx]
+                art_action = ArticulationAction(
+                    cmd_state.position.cpu().numpy(),
+                    cmd_state.velocity.cpu().numpy(),
+                    joint_indices=idx_list,
+                )
+                articulation_controller.apply_action(art_action)
+                cmd_idx += 1
+                last_cmd_time = now
+                if cmd_idx >= len(cmd_plan.position):
+                    cmd_idx = 0
+                    cmd_plan = None
 
 
 def prune_factory_dressing(cfg: dict) -> list[str]:
@@ -556,7 +636,7 @@ def prune_factory_dressing(cfg: dict) -> list[str]:
 # works fine when no URDF import has happened. Revert to False (or delete
 # this flag and the guards using it) once that's confirmed either way --
 # this is not meant to be a permanent mode.
-_SKIP_ROBOT_FOR_DRAGDROP_TEST = True
+_SKIP_ROBOT_FOR_DRAGDROP_TEST = False
 
 
 def main() -> None:

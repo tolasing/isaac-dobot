@@ -4,6 +4,12 @@
 # Built and smoke-tested (torch + curobo import, CUDA available, tensors on
 # GPU) against a live RTX PRO 4000 Blackwell. TORCH_CUDA_ARCH_LIST is tuned
 # to that GPU -- adjust if deploying to different hardware.
+#
+# On this cloud GPU box the actual card is an NVIDIA L4 (Ada Lovelace,
+# sm_89, confirmed via `nvidia-smi`), not the RTX PRO 4000 Blackwell above --
+# TORCH_CUDA_ARCH_LIST is set to 8.9+PTX below to match. PTX compatibility is
+# forward-only (older PTX runs on newer GPUs, not the reverse), so the
+# Blackwell-tuned 12.0+PTX kernels would not run at all on this L4.
 
 ARG DOCKER_NAME_SUFFIX=""
 FROM isaac-cobot-base${DOCKER_NAME_SUFFIX} AS curobo
@@ -52,10 +58,12 @@ RUN set -euo pipefail && \
 ENV CUDA_HOME=/usr/local/cuda-12.8
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
-# 12.0 targets Blackwell (verified against the actual dev workstation GPU:
-# an RTX PRO 4000 Blackwell, sm_120). +PTX keeps other architectures
-# working via JIT. Adjust if deploying to different hardware.
-ENV TORCH_CUDA_ARCH_LIST=12.0+PTX
+# 8.9 targets this cloud box's actual GPU (verified via nvidia-smi: an
+# NVIDIA L4, Ada Lovelace, sm_89). +PTX keeps other architectures working
+# via JIT (forward-compatible only). The RTX PRO 4000 Blackwell workstation
+# this project was originally developed against needs 12.0+PTX instead --
+# adjust back if redeploying there.
+ENV TORCH_CUDA_ARCH_LIST=8.9+PTX
 
 # Isaac Sim ships its own torch under omni.isaac.ml_archive/pip_prebundle/,
 # which python.sh's sys.path resolves BEFORE site-packages. Left in place,

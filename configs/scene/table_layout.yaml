@@ -180,7 +180,7 @@ cr5_mount:
   # MotionGen -- keeps the Isaac Sim import and the cuRobo kinematics using
   # the same robot while this override is active.
   robot_override:
-    enabled: true
+    enabled: false
     urdf_relative_path: robot/franka_description/franka_panda.urdf
     default_drive_strength: 1047.19751
     default_position_drive_damping: 52.35988
@@ -211,18 +211,33 @@ teleop_target:
   # calling plan_single()), NOT USD world space -- unlike
   # examples/curobo_reference/motion_gen_reacher.py, whose robot happens to
   # sit at the world origin, so the two frames are numerically identical
-  # there. An earlier placeholder here (same x,y as cr5_mount, 1.2m up)
-  # mapped to base-frame (0, 0, 0.43) -- almost directly above the robot's
-  # own base at low height -- and reliably failed IK
-  # (MotionGenStatus.IK_FAIL). This value is instead the robot's own
-  # retract_config end-effector pose (confirmed reachable -- it's a trivial
-  # identity plan) converted to world frame via cr5_mount.position, so the
-  # ghost target starts out exactly coincident with the real end-effector.
-  position: [1.5605, -3.3400, 1.3604]
-  # Matches examples/curobo_reference/motion_gen_reacher.py's own default
-  # goal orientation (a 180deg flip about X -- end-effector pointing down
-  # at the workspace rather than straight up).
-  orientation_wxyz: [0.0, 1.0, 0.0, 0.0]
+  # there.
+  #
+  # CR5-derived (replacing an earlier Franka-derived value): computed via
+  # CudaRobotModel(cr5.yml).get_state(retract_config).ee_pose, composed with
+  # cr5_mount.position/orientation_wxyz via curobo.types.math.Pose.multiply()
+  # -- see docs/mefron-history.md-style derivation in the dobot branch's own
+  # notes. The previous value here ([1.5605, -3.3400, 1.3604],
+  # [0.0, 1.0, 0.0, 0.0]) was derived while cr5_mount.robot_override was
+  # enabled (Franka mounted) -- confirmed live it reliably failed IK
+  # (MotionGenStatus.IK_FAIL) once the real CR5 was mounted instead, since
+  # the CR5's own retract_config end-effector pose sits nowhere near where
+  # the Franka's did. This value is the CR5's own retract_config end-
+  # effector pose (a trivial identity plan, guaranteed reachable) converted
+  # to world frame via cr5_mount.position, so the ghost target starts out
+  # exactly coincident with the real end-effector.
+  #
+  # Recomputed a second time after cr5.yml's retract_config itself changed
+  # (all-zero -> bent-elbow, see that file's own comment -- the all-zero
+  # pose was a severe kinematic singularity) -- this position/orientation
+  # is FK at the new retract_config, not the old all-zero one.
+  position: [1.5630276203155518, -3.5731465816497803, 1.7584779262542725]
+  # CR5 ee_link's (Link6) own retract-config orientation -- NOT the same
+  # "point straight down" convention the old Franka-derived value used
+  # (examples/curobo_reference/motion_gen_reacher.py's default goal
+  # orientation doesn't apply here; that reference robot's ee_link frame
+  # convention differs from the CR5 URDF's Link6).
+  orientation_wxyz: [0.2753560245037079, -0.07059486210346222, 0.6512897610664368, -0.703574538230896]
 
   # Debounce thresholds gating when plan_single() actually runs (see
   # run_teleop_loop() in scripts/build_scene.py) -- ported verbatim from

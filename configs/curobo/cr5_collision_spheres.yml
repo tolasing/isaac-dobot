@@ -6,10 +6,27 @@
 # actual collision mesh geometry. Treat these as a rough placeholder to be
 # tuned (e.g. with cuRobo's sphere-fitting tools) before relying on them
 # for real collision avoidance.
-
+#
+# base_link's first sphere was originally `center: [0,0,0.05], radius: 0.09`
+# -- spanning local z=[-0.04, 0.14], i.e. dipping 0.04m *below* the robot's
+# own mount plane (local z=0). Confirmed live (table_layout.yaml's
+# cr5_mount, base at world z=0.77, sitting flush on RobotPedestal, whose
+# own solid body spans world z=[0, 0.776]) that this made every
+# plan_single() call fail with
+# `MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION` -- the sphere was
+# geometrically overlapping the pedestal it's mounted on, not a target-
+# reachability problem. Raised to `center: [0,0,0.12]`: note this must clear
+# not just local z=0 but z=0 *plus* cr5.yml's own collision_sphere_buffer
+# (0.005, added to every sphere's radius at load time) *plus* margin down
+# to the pedestal's actual top surface, not just the mount plane itself --
+# a first attempt at `center: [0,0,0.09]` (exactly radius-tangent to local
+# z=0, ignoring the buffer) still left an ~11mm sliver overlapping the
+# pedestal and still failed with the same status. `[0,0,0.12]` clears the
+# buffered sphere (effective radius 0.095) to world z=0.795, ~19mm above
+# the pedestal's actual top (0.776).
 collision_spheres:
   base_link:
-    - center: [0.0, 0.0, 0.05]
+    - center: [0.0, 0.0, 0.12]
       radius: 0.09
     - center: [0.0, 0.0, 0.13]
       radius: 0.08

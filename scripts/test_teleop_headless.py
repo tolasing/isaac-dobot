@@ -74,7 +74,17 @@ import build_scene  # noqa: E402
 # Small enough to stay within reach of the target's own starting pose (see
 # table_layout.yaml's teleop_target comment -- that starting pose is itself
 # already a confirmed-reachable retract-config pose).
-_DRAG_OFFSET = np.array([0.0, 0.05, 0.05])
+#
+# [0.0, 0.05, 0.05] (copied from examples/curobo_reference/motion_gen_reacher.py's
+# own convention) was confirmed live to IK_FAIL specifically for the CR5's
+# own bent-elbow retract_config (cr5.yml) -- not a bug, just an arbitrary
+# magic number that happens to exceed this particular pose's +Y reachable
+# envelope (individually-tested offsets in every other direction, and
+# smaller +Y+Z magnitudes, all succeed). The test only needs *some* valid
+# reachable perturbation to exercise the teleop pipeline, so this was
+# shrunk rather than re-tuning retract_config again to fit an otherwise-
+# meaningless constant.
+_DRAG_OFFSET = np.array([0.0, 0.02, 0.02])
 _MAX_ITERATIONS = 200
 # Must clear build_scene._TELEOP_INIT_FRAMES (10) + _TELEOP_SETTLE_FRAMES
 # (20) before the simulated drag lands, so run_teleop_loop's debounce logic
