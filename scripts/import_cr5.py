@@ -59,8 +59,29 @@ def import_cr5(
     default_position_drive_damping: float = 1e4,
     joint_drive_stiffness: float | None = None,
     joint_drive_damping: float | None = None,
+    fix_base: bool = True,
 ) -> str:
     """Imports a URDF (the CR5 by default) via URDFParseAndImportFile.
+
+    `fix_base`: True (the default, correct for every existing caller -- the
+    real CR5, bolted to a pedestal) anchors the imported root to the world
+    via a real `PhysicsFixedJoint`, with `ArticulationRootAPI` landing on
+    that joint prim itself. CONFIRMED LIVE this is the wrong shape for a
+    free-standing asset meant to be repositioned by other tooling (e.g.
+    `scripts/generate_cr5_gripper_grasp_editor_usd.py`'s gripper-only
+    export for NVIDIA's Grasp Editor extension): with `fix_base=True`, the
+    Grasp Editor's own `initialize_objects()` crashed with `AttributeError:
+    'NoneType' object has no attribute 'link_names'` right after a
+    `[omni.physx.tensors.plugin] prim '.../root_joint' was deleted while
+    being used by a tensor view class` warning -- traced to the tutorial's
+    own working Franka `/World/panda_hand` asset having a fundamentally
+    different shape (`ArticulationRootAPI` on a plain Xform *body*
+    container, a non-constraining generic `PhysicsJoint` with nothing
+    anchoring it to the world, i.e. a genuinely free rigid body) that this
+    fixed-base import doesn't reproduce. `fix_base=False` matches that
+    shape instead: no root joint at all, `ArticulationRootAPI` lands
+    directly on the base link's own Xform, free/dynamic body.
+    """
 
     `default_drive_strength`/`default_position_drive_damping` default to
     the CR5's own tuning -- a workaround for its URDF's degenerate

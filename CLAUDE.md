@@ -60,14 +60,18 @@ pipeline above at all; scoped to the generic `scripts/build_scene.py` +
   `docs/mefron-history.md` for the environment fixes needed to run it and
   a license caveat on its header comments.
 - `scripts/mefron_lib/` — shared package backing every mefron entry-point
-  script (`mefron.py`, `mefron_gripper_probe.py`,
-  `mefron_grasp_editor_scene.py`, `franka_grasp_editor_scene.py`,
-  `test_mefron_*_headless.py`): `kit_bootstrap.py` (packaging preload +
-  stale-config cleanup, stdlib-only so it's safe to import before
-  `SimulationApp` exists), `config.py` (all constants), `grasp.py` (pose
-  math), `robot.py` (mount/friction/drive), `teleop.py` (keyboard control +
-  `run_teleop_loop()`). `mefron2.py` (dormant/superseded, see below) keeps
-  its own diverged copies of everything except the packaging-preload block.
+  script (`mefron.py`, `mefron_gripper_probe.py`, `test_mefron_*_headless.py`):
+  `kit_bootstrap.py` (packaging preload + stale-config cleanup, stdlib-only
+  so it's safe to import before `SimulationApp` exists), `config.py` (all
+  constants), `grasp.py` (pose math), `robot.py` (mount/friction/drive),
+  `teleop.py` (keyboard control + `run_teleop_loop()`).
+  `mefron2.py` (superseded diverged copy), `build_scene_mefron.py`
+  (see its own entry below), and the standalone Grasp Editor diagnostic
+  scripts this repo's `docs/grasp-and-assembly-offsets.md` refers to
+  (`mefron_grasp_editor_scene.py`, `franka_grasp_editor_scene.py`,
+  `panda_hand_grasp_editor_scene.py`) were all removed as unused bloat —
+  their history is preserved in git and in that doc; nothing currently
+  depends on them.
 
 ## Active script + current state
 
@@ -90,13 +94,14 @@ onto its own free-floating `base_link`, for dragging into place against a
 part mesh in Stop mode to measure a grasp pose directly, without cuRobo
 IK/teleop in the way.
 
-`scripts/build_scene_mefron.py` (+ `configs/scene/mefron_layout.yaml`) is
-architecturally preferred — same goal, but a fresh anonymous stage with
-`mefron.usd` referenced in, which avoids most of `mefron.py`'s bugs by
-construction — but is currently **dormant**: deriving the grasp/assembly
-offsets requires temporarily reparenting prims in the Stage tree, which
-only works when `mefron.usd` is opened directly, so active work happens in
-`mefron.py`. See `docs/mefron-history.md` for both files' full histories.
+`scripts/build_scene_mefron.py` (+ `configs/scene/mefron_layout.yaml`) was
+the architecturally-preferred alternative — same goal, but a fresh
+anonymous stage with `mefron.usd` referenced in, which avoided most of
+`mefron.py`'s bugs by construction — but sat **dormant** (deriving the
+grasp/assembly offsets requires temporarily reparenting prims in the Stage
+tree, which only works when `mefron.usd` is opened directly, so active
+work always happened in `mefron.py` instead) and was **removed** as unused
+bloat. See `docs/mefron-history.md` for its full history if ever revived.
 
 Current constants (`scripts/mefron_lib/config.py`):
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`:
@@ -483,49 +488,74 @@ route around both by construction — see each entry):
   mount transform happens to be identity right now — see that config's own
   comment).
 
-**Grasp Editor asset (gripper-only, no arm)**: `assets/grasp_editor_tutorial/`
-is NVIDIA's own official Grasp Editor Tutorial sample content (a
-`grasp_editor_tutorial.usd` stage + `Isaac/Robots/Franka/` assets) — used
-successfully elsewhere in this repo already (`scripts/mefron_lib/config.py`'s
-`GRASP_EDITOR_YAML_PATH`/`GRASP_NAME`, consumed by `mefron.py`'s J key),
-unlike the *different*, abandoned in-repo attempt against `mefron.usd`'s own
-broken Franka import (see `docs/grasp-and-assembly-offsets.md`). Confirmed
-live by direct USD introspection: `grasp_editor_tutorial.usd` never actually
-references `Isaac/Robots/Franka/franka.usd` (the full arm, unused); it
-builds `/World/panda_hand` directly instead — the Franka hand+fingers only,
-physics joints authored right there in that stage, geometry pulled from
-`Isaac/Robots/Franka/Props/*.usd`.
-`scripts/generate_cr5_gripper_grasp_editor_usd.py` produces the CR5
-analogue of that same `/World/panda_hand` role: a standalone, self-contained
-`assets/grasp_editor_tutorial/Grasp_Editor_Tutorial_Stage/Isaac/Robots/CR5/cr5_gripper.usd`
-(default prim `/cr5_gripper`, geometry + physics both baked in — no
-separate Props files, an organizational nicety the Franka assets happen to
-use but don't require) built by importing `robots/pgc140/urdf/pgc140_robot.urdf`
-via `import_cr5()` into an anonymous stage, applying the same
-`tune_gripper_drive()`/`filter_self_collision_from_curobo_config()`/
-`disable_gripper_finger_gravity()` calls `build_scene.py`'s `mount_cr5()`
-uses, then extracting just that prim's subtree via `Sdf.CopySpec()`.
-**Confirmed live**: referencing the resulting file into a fresh stage and
-building a `SingleArticulation` on it produces a real, working 2-DOF
-articulation (`dof_names=['pgc140_finger1_joint', 'pgc140_finger2_joint']`).
-Getting a correct export required two real, previously-unknown bugs of its
-own, both about USD composition rather than physics:
-- `Sdf.CopySpec()` only copies a prim's raw, uncomposed spec — each link's
-  own `visuals`/`collisions` Xform is actually just an internal reference
-  arc (`SdfReference` with no asset path, just an `SdfPath`) to a sibling
-  root-level `/visuals/<link>`, `/colliders/<link>` scope (a dedup
-  mechanism the URDF importer uses for shared geometry across links).
-  Copying only the robot's own subtree left those references dangling in
-  the destination file — confirmed live, the first exported file's
-  `visuals`/`collisions` Xforms had zero children, no `Mesh` anywhere.
-- `Usd.Stage.Flatten()` does **not** fix this — confirmed live it flattens
-  the sublayer stack, not reference/payload composition arcs; the
-  flattened layer's own `/visuals` scope still existed as a separate root
-  prim, with the reference arc pointing to it still unresolved.
-  Fixed (not by flattening) by also copying the root-level `/visuals`,
-  `/colliders`, `/meshes` scopes themselves into the destination file, at
-  the same absolute paths the existing reference arcs already point to, so
-  those references resolve correctly in the new self-contained file.
+**Grasp Editor asset**: `assets/grasp_editor_tutorial/` is NVIDIA's own
+official Grasp Editor Tutorial sample content (a `grasp_editor_tutorial.usd`
+stage + `Isaac/Robots/Franka/` assets) — used successfully elsewhere in this
+repo already (`scripts/mefron_lib/config.py`'s `GRASP_EDITOR_YAML_PATH`/
+`GRASP_NAME`, consumed by `mefron.py`'s J key), unlike the *different*,
+abandoned in-repo attempt against `mefron.usd`'s own broken Franka import
+(see `docs/grasp-and-assembly-offsets.md`). Confirmed live by direct USD
+introspection: `grasp_editor_tutorial.usd` never actually references
+`Isaac/Robots/Franka/franka.usd` (the full arm, unused); it builds
+`/World/panda_hand` directly instead — the Franka hand+fingers only,
+physics joints authored right there in that stage.
+
+A first attempt built a *scripted*, gripper-only equivalent for the CR5
+(`scripts/generate_cr5_gripper_grasp_editor_usd.py`, importing
+`robots/pgc140/urdf/pgc140_robot.urdf` via `import_cr5()` into an anonymous
+stage and extracting its subtree with `Sdf.CopySpec()`). It produced a
+structurally-valid 2-DOF articulation (confirmed live) but **crashed the
+real Grasp Editor extension** on selection
+(`AttributeError: 'NoneType' object has no attribute 'link_names'`, preceded
+by `prim '.../root_joint' was deleted while being used by a tensor view
+class`) — root-caused by reading the extension's own source
+(`isaacsim.robot_setup.grasp_editor/ui_builder.py`) and comparing against
+the tutorial's working Franka: `import_cr5()`'s default `fix_base=True`
+authors a real `PhysicsFixedJoint` anchoring the robot to the world with
+`ArticulationRootAPI` on *that joint*, whereas the working Franka has
+`ArticulationRootAPI` on a plain Xform ancestor with nothing anchoring it to
+the world. `import_cr5()` gained a `fix_base: bool = True` parameter (still
+defaults to preserve every other caller's behavior) to address this, but the
+generator script itself was **removed** (per direct user feedback: one-off
+generator scripts for single output assets were adding more repo bloat than
+value) in favor of doing the equivalent import by hand in the GUI.
+
+**Current state (manual GUI workflow, replacing the deleted script)**:
+`robots/cr5_pgc140_gripper/urdf/cr5_pgc140_gripper.urdf` is a hand-edited
+copy of the combined CR5+gripper URDF (**the full arm, not gripper-only**
+like the Franka's own `/World/panda_hand` — a deliberate deviation from that
+established convention, not yet reconciled) with a `dummy_link`/`dummy_joint`
+pair prepended as the new root, imported via the Isaac Sim GUI's own URDF
+Importer with **Links → Moveable Base** (the GUI's current name for
+`fix_base=False`) into
+`assets/grasp_editor_tutorial/Grasp_Editor_Tutorial_Stage/Isaac/Robots/CR5/cr5_pgc140_gripper/`
+(as a "Referenced Model" — produces the same layered `configuration/` folder
+described in "Must-know gotchas" below, confirmed live from this exact
+import). **Confirmed live**: Moveable Base fixes the crash — the Grasp
+Editor now opens this gripper without crashing, `/World/cr5_pgc140_gripper`
+selectable as the articulation, `/World/mug` as the rigid body.
+
+**Still open**: the "Select Frames of Reference" dropdown only lists
+`dummy_link` and its own two (empty) `visuals`/`collisions` children — not
+the real gripper geometry (`pgc140_base_link`, either finger). Root cause,
+read directly from `ui_builder.py`'s `populate_subframes()`:
+```python
+frames = [str(p.GetPath()) for p in Usd.PrimRange(prim)
+          if UsdGeom.Xformable(p) and ...]     # prim = self._articulation.prim
+```
+`Usd.PrimRange` only walks **descendants**. The URDF importer places every
+link as a flat sibling under the robot's own root Xform regardless of
+kinematic parent/child (confirmed repeatedly this session, both here and in
+the earlier `pgc140_gripper_probe.py` investigation) — so whichever prim
+ends up as `self._articulation.prim` (here, `dummy_link` — it has no
+geometry of its own beyond its own empty `visuals`/`collisions` Xforms) is
+*not* an ancestor of the real links, which live as its siblings instead.
+The working Franka avoids this because `ArticulationRootAPI` sits on
+`/World/panda_hand`, a genuine ancestor of the hand *and* both fingers.
+Fixing this needs `ArticulationRootAPI` moved (manually, via the Property
+panel: remove it from wherever it landed, add it to the top-level container
+prim instead) to a prim that's an actual ancestor of every link that should
+be selectable as a reference frame — not yet done as of this update.
 
 ## Must-know gotchas
 
@@ -592,7 +622,14 @@ own, both about USD composition rather than physics:
   breaks `CopyPrim`-based duplication of anything under the robot (use
   `prim.GetReferences().AddInternalReference()` instead). A fresh
   anonymous stage with content brought in via `add_reference_to_stage()`
-  (what `build_scene_mefron.py` does) avoids this entirely. Full detail:
+  (what `build_scene.py`'s `build_factory()` does) avoids this entirely.
+  Also confirmed live via the Isaac Sim GUI's own URDF importer: choosing
+  "Referenced Model" output mode produces this exact same layered
+  `configuration/` folder (see `assets/grasp_editor_tutorial/.../CR5/
+  cr5_pgc140_gripper/configuration/` for a live example) — it's not
+  specific to the Python `URDFParseAndImportFile` command used elsewhere in
+  this repo, it's how the importer behaves whenever the target stage is
+  file-backed rather than anonymous, GUI or scripted alike. Full detail:
   `docs/mefron-history.md`.
 - **`SimulationApp` full experience breaks cuRobo's `packaging` import.**
   Passing `experience=.../isaacsim.exp.full.kit` (needed for the Physics
