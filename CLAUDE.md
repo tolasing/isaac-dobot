@@ -125,6 +125,16 @@ Currently open issues (see the linked docs for full diagnosis):
 - `main_holder`'s convex-decomposition collision tuning (fixes sinking +
   lost mounting studs) is researched but not yet applied/saved to
   `mefron.usd` — see `docs/mefron-history.md`.
+- All 5 scanner-assembly source USDs (`assets/mefron/scanner assembly/`)
+  audited for the ghost/duplicate-collider pattern (see the `dobot`
+  branch's `cr5_pgc140_gripper` gotcha below for the general case): found
+  and removed a stale `PhysxConvexHullCollisionAPI` stacked on
+  `finger_print_scanner`'s legit `sdf` collider (in its own source file
+  *and* independently re-authored in `mefron.usd`'s override of it), plus
+  stale `convexHull`/`convexDecomposition` schemas on `main_holder`'s
+  collider — the latter's *only* collider turned out to live entirely as
+  a `mefron.usd` override, not in `main holder.usd` itself.
+  `backpanel_support`/`screen`/`PCB_Assembly` were already clean.
 
 ## CR5 validation (`dobot` branch)
 
