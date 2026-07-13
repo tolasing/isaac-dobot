@@ -488,14 +488,19 @@ route around both by construction — see each entry):
   mount transform happens to be identity right now — see that config's own
   comment).
 
-**Grasp Editor asset**: `assets/grasp_editor_tutorial/` is NVIDIA's own
-official Grasp Editor Tutorial sample content (a `grasp_editor_tutorial.usd`
-stage + `Isaac/Robots/Franka/` assets) — used successfully elsewhere in this
-repo already (`scripts/mefron_lib/config.py`'s `GRASP_EDITOR_YAML_PATH`/
-`GRASP_NAME`, consumed by `mefron.py`'s J key), unlike the *different*,
+**Grasp Editor asset**: `assets/Grasp_Editor/` (renamed from
+`assets/grasp_editor_tutorial/Grasp_Editor_Tutorial_Stage/`, flattened up
+one level — `grasp_editor.usd` is the renamed top-level scene, was
+`grasp_editor_tutorial.usd`; no other tracked file in this repo hardcodes
+the old path, so nothing else needed updating for the rename —
+`scripts/mefron_lib/config.py`'s `GRASP_EDITOR_YAML_PATH` is unrelated,
+pointing at `assets/finger_print_scanner.yaml`) is NVIDIA's own official
+Grasp Editor Tutorial sample content (the scene
++ `Isaac/Robots/Franka/` assets) — used successfully elsewhere in this
+repo already (consumed by `mefron.py`'s J key), unlike the *different*,
 abandoned in-repo attempt against `mefron.usd`'s own broken Franka import
 (see `docs/grasp-and-assembly-offsets.md`). Confirmed live by direct USD
-introspection: `grasp_editor_tutorial.usd` never actually references
+introspection: the scene never actually references
 `Isaac/Robots/Franka/franka.usd` (the full arm, unused); it builds
 `/World/panda_hand` directly instead — the Franka hand+fingers only,
 physics joints authored right there in that stage.
@@ -528,34 +533,46 @@ established convention, not yet reconciled) with a `dummy_link`/`dummy_joint`
 pair prepended as the new root, imported via the Isaac Sim GUI's own URDF
 Importer with **Links → Moveable Base** (the GUI's current name for
 `fix_base=False`) into
-`assets/grasp_editor_tutorial/Grasp_Editor_Tutorial_Stage/Isaac/Robots/CR5/cr5_pgc140_gripper/`
+`assets/Grasp_Editor/Isaac/Robots/CR5/cr5_pgc140_gripper/`
 (as a "Referenced Model" — produces the same layered `configuration/` folder
 described in "Must-know gotchas" below, confirmed live from this exact
 import). **Confirmed live**: Moveable Base fixes the crash — the Grasp
 Editor now opens this gripper without crashing, `/World/cr5_pgc140_gripper`
 selectable as the articulation, `/World/mug` as the rigid body.
 
-**Still open**: the "Select Frames of Reference" dropdown only lists
-`dummy_link` and its own two (empty) `visuals`/`collisions` children — not
-the real gripper geometry (`pgc140_base_link`, either finger). Root cause,
-read directly from `ui_builder.py`'s `populate_subframes()`:
-```python
-frames = [str(p.GetPath()) for p in Usd.PrimRange(prim)
-          if UsdGeom.Xformable(p) and ...]     # prim = self._articulation.prim
-```
-`Usd.PrimRange` only walks **descendants**. The URDF importer places every
-link as a flat sibling under the robot's own root Xform regardless of
-kinematic parent/child (confirmed repeatedly this session, both here and in
-the earlier `pgc140_gripper_probe.py` investigation) — so whichever prim
-ends up as `self._articulation.prim` (here, `dummy_link` — it has no
-geometry of its own beyond its own empty `visuals`/`collisions` Xforms) is
-*not* an ancestor of the real links, which live as its siblings instead.
-The working Franka avoids this because `ArticulationRootAPI` sits on
-`/World/panda_hand`, a genuine ancestor of the hand *and* both fingers.
-Fixing this needs `ArticulationRootAPI` moved (manually, via the Property
-panel: remove it from wherever it landed, add it to the top-level container
-prim instead) to a prim that's an actual ancestor of every link that should
-be selectable as a reference frame — not yet done as of this update.
+**RESOLVED** (see above): `ArticulationRootAPI` moved from `dummy_link`
+to `/cr5_pgc140_robot` itself, mirroring `panda_hand`'s own "root
+container, no RigidBodyAPI" pattern — fixes Select-Frames-of-Reference.
+Also needed here, none of it covered by `import_cr5()` for this manually
+GUI-imported asset: a `rootJoint` (plain `UsdPhysics.Joint`, `body1`
+empty) so it doesn't fall under gravity; `disable_gripper_finger_gravity()`/
+`tune_gripper_drive()` (damping was `0.25`, ended up matching Franka's own
+`stiffness=10000`/`damping=1000` — `maxForce` stays `140` from the PGC-140's
+real spec, not Franka's unrelated `7.2N`)/self-collision filtering
+reapplied by hand; plus a `pgc140_finger1_link`↔`finger2_link` filter
+beyond `cr5.yml`'s own list, since here the fingers can close fully
+together with nothing between them. Articulation/rigid-body
+`solverPositionIterationCount`/`solverVelocityIterationCount` (velocity
+was `1` everywhere, a real bottleneck for a symmetric two-finger grasp's
+simultaneous contacts) also needed raising, on both the gripper *and*
+whatever it's grasping.
+
+Any `CollisionAPI` must sit on the actual mesh, not a parent Xform, or
+it's silently inert (hit this repeatedly — the gripper, a test
+`/World/mug`, and `finger_print_scanner`). A `PhysX error: ...
+foundLostAggregatePairsCapacity` in the console means an undersized GPU
+dynamics buffer is silently dropping collisions. **A newer, sneakier
+variant of the same duplicate-collider mistake**: editing a *referenced*
+asset's collider live in the GUI (Colliders Preset, changing
+Approximation) authors the change as an override in whichever file is
+currently open — not in the referenced source asset — so a part's own
+`.usd` file can look perfectly clean when opened standalone while the
+*composed* scene still carries an extra, conflicting collider (e.g. a
+stray `convexDecomposition` layered on top of a correct `sdf` collider).
+Always check the fully composed stage, not just the source file, and use
+`Usd.PrimRange.AllPrims`/`GetAllChildren()` rather than the default
+traversal when auditing — USD silently skips instancing `Prototypes`
+scopes (and their real geometry) under the default predicate.
 
 ## Must-know gotchas
 
@@ -625,7 +642,7 @@ be selectable as a reference frame — not yet done as of this update.
   (what `build_scene.py`'s `build_factory()` does) avoids this entirely.
   Also confirmed live via the Isaac Sim GUI's own URDF importer: choosing
   "Referenced Model" output mode produces this exact same layered
-  `configuration/` folder (see `assets/grasp_editor_tutorial/.../CR5/
+  `configuration/` folder (see `assets/Grasp_Editor/.../CR5/
   cr5_pgc140_gripper/configuration/` for a live example) — it's not
   specific to the Python `URDFParseAndImportFile` command used elsewhere in
   this repo, it's how the importer behaves whenever the target stage is
