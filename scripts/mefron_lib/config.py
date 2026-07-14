@@ -13,18 +13,28 @@ MEFRON_USD = REPO_ROOT / "assets" / "mefron" / "factory floor" / "mefron.usd"
 # file-backed stage; see kit_bootstrap.clear_stale_robot_configuration().
 MEFRON_CONFIGURATION_DIR = MEFRON_USD.parent / "configuration"
 
-ROBOT_PRIM_PATH = "/World/Franka"
+ROBOT_PRIM_PATH = "/World/CR5"
 TARGET_PRIM_PATH = "/World/target"
-# SEKTION cabinet table the Franka mounts on (replaced the original Pedestal_plates/Cube_05 plate).
+# SEKTION cabinet table the arm mounts on (replaced the original Pedestal_plates/Cube_05 plate).
 # No /Factory prefix: mefron.py opens mefron.usd directly, one level shallower than build_scene_mefron.py's reference.
 MOUNT_PLATE_PRIM_PATH = "/World/sektion_cabinet_instanceable"
 MOUNT_POSITION = [2.74097, -4.782, 0.7924]
-MOUNT_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# 180-deg yaw about world Z, not identity. The identity value inherited from the Franka-era config was
+# only ever validated for the FRANKA's own base_link convention (manually placed in the GUI, see
+# docs/mefron-history.md) -- confirmed live (screen recording) that reusing it for the CR5 made the arm
+# reach smoothly to one side of the workspace and jerk/reverse on the other, consistent with the CR5's
+# own joint2 shoulder-frame convention (see robots/cr5/urdf/cr5_robot.urdf) not matching Franka's.
+MOUNT_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 
-FRANKA_URDF_RELATIVE_PATH = "robot/franka_description/franka_panda.urdf"
-FRANKA_DRIVE_STRENGTH = 1047.19751
-FRANKA_DRIVE_DAMPING = 52.35988
-FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
+# Repo-local (not cuRobo-bundled, unlike franka.yml) -- teleop.setup_motion_gen() must patch its
+# urdf_path/asset_root_path/collision_spheres to absolute paths after loading, same as build_scene.py does.
+CR5_CUROBO_CONFIG_PATH = REPO_ROOT / "configs" / "curobo" / "cr5.yml"
+# Re-authored post-import via import_cr5()'s joint_drive_stiffness/damping params -- its
+# default_drive_strength/default_position_drive_damping kwargs don't reliably land for the CR5 URDF
+# (confirmed bug, see import_cr5.py's own docstring). Values from configs/scene/table_layout.yaml's
+# cr5_mount.joint_drive, already proven live for this exact arm.
+CR5_JOINT_DRIVE_STIFFNESS = 625.0
+CR5_JOINT_DRIVE_DAMPING = 50.0
 
 # Nearby scene objects within the Franka's reach envelope, not the whole /World/Factory backdrop
 # (which would add scan time for no benefit).
@@ -58,28 +68,32 @@ _TELEOP_TIME_DILATION_FACTOR = 0.3
 _TELEOP_VELOCITY_SCALE = 0.5
 _TELEOP_ACCELERATION_SCALE = 0.5
 
-# Grasp-physics constants, ported from build_scene_mefron.py's apply_gripper_friction()/stiffen_gripper_drive().
-GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
-# Narrowed from the full 0-0.04m stroke to bracket finger_print_scanner's actual 12mm grip width
-# (measured via UsdGeom.BBoxCache local bound) -- the full stroke let one finger contact and drag the
-# part sideways well before the other closed the remaining distance. CLOSED is the symmetric half-width
-# (6mm/side); OPEN adds a 4mm/side clearance margin for approach.
-GRIPPER_OPEN_POSITION = 0.010
-GRIPPER_CLOSED_POSITION = 0.000
+# Grasp-physics constants for the PGC-140. Duplicated here rather than imported from
+# scripts/import_cr5.py: that module does unconditional omni.kit.commands/omni.usd/pxr imports at
+# module scope, which would break this file's own "no omni/curobo imports" contract.
+GRIPPER_JOINT_NAMES = ["pgc140_finger1_joint", "pgc140_finger2_joint"]
+# PGC-140's full stroke -- NOTE inverted convention vs. the old Franka values (there, larger position
+# was more open). Not yet narrowed to finger_print_scanner's actual grip width the way the Franka's
+# were; that's a follow-up tuning pass, not a blocker.
+GRIPPER_OPEN_POSITION = 0.0
+GRIPPER_CLOSED_POSITION = 0.025
 # Rate (m/s) the commanded gripper position is ramped toward open/closed, instead of stepping instantly --
-# avoids a snap shut under the high drive stiffness. 0.02 m/s takes ~0.2s for the now-narrowed 0.004m travel.
+# avoids a snap shut under the high drive stiffness.
 GRIPPER_CLOSE_SPEED = 0.02
 GRIPPER_FRICTION_MATERIAL_PATH = "/World/GripperFrictionMaterial"
 GRIPPER_STATIC_FRICTION = 1.5
 GRIPPER_DYNAMIC_FRICTION = 1.5
-GRIPPER_FINGER_LINK_NAMES = ["panda_leftfinger", "panda_rightfinger"]
-GRIPPER_DRIVE_STIFFNESS = 10000.0
-GRIPPER_DRIVE_DAMPING = 200.0
+GRIPPER_FINGER_LINK_NAMES = ["pgc140_finger1_link", "pgc140_finger2_link"]
+# Reused placeholder from the arm's own joint_drive values (configs/scene/table_layout.yaml's
+# cr5_mount.gripper.joint_drive comment) -- not independently re-derived yet.
+GRIPPER_DRIVE_STIFFNESS = 625.0
+GRIPPER_DRIVE_DAMPING = 50.0
+GRIPPER_MAX_FORCE = 140.0
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
 # Grasp Editor-exported grasp-approach pose, wired to the J key -- the sole grasp-approach method now
 # that the hand-derived-constant G key has been removed. See grasp.compute_grasp_approach_pose_from_file().
-GRASP_EDITOR_YAML_PATH = REPO_ROOT / "assets" / "finger_print_scanner.yaml"
+GRASP_EDITOR_YAML_PATH = REPO_ROOT / "assets" / "Grasp_Editor" / "pgc_finger_print_scanner.yaml"
 GRASP_EDITOR_GRASP_NAME = "grasp_0"
 
 # T_H_S: finger_print_scanner's pose expressed in main_holder's own local frame at the correctly

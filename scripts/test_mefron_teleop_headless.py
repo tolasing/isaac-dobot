@@ -27,8 +27,15 @@ from isaacsim.core.prims import SingleArticulation  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
 from mefron_lib import config, robot, teleop  # noqa: E402
 
-# Small offset from the target's reachable starting pose.
-_DRAG_OFFSET = np.array([0.0, 0.05, 0.05])
+# Both signs of the same offset, from the target's reachable starting pose -- a direction-dependent mount
+# orientation bug (arm reaches smoothly on one side, jerks/reverses on the other) can pass a single-
+# direction drag test while still being broken, which is exactly what happened here; shrunk from the
+# Franka-era [0, 0.05, 0.05] the same way scripts/test_teleop_headless.py needed for the CR5's different
+# reachable envelope, adjust further if either direction still exceeds it.
+_DRAG_CASES = [
+    ("positive", np.array([0.0, 0.02, 0.02])),
+    ("negative", np.array([0.0, -0.02, -0.02])),
+]
 _MAX_ITERATIONS = 200
 # Must clear run_teleop_loop's own init/settle frame counts first.
 _SETTLE_CALLS = 40
@@ -43,9 +50,8 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
+    robot.mount_cr5()
     robot.apply_gripper_friction()
-    robot.stiffen_gripper_drive()
 
     print("[test_mefron_teleop_headless] warming up cuRobo motion_gen...", flush=True)
     motion_gen, robot_cfg = teleop.setup_motion_gen()
@@ -66,36 +72,48 @@ def main() -> None:
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
-
     start_position, start_orientation = target.get_world_pose()
-    dragged_position = start_position + _DRAG_OFFSET
 
-    call_count = {"n": 0}
+    # run_teleop_loop() re-snaps the arm to default_config in its own init phase on every fresh call
+    # (its past_pose/target_pose/idx_list are all local, rebuilt from scratch each time) -- so each case
+    # below is an independent drag from retract, not a continuation of the previous case, and comparing
+    # each case's end pose against the shared start_positions is a valid, apples-to-apples check.
+    all_passed = True
+    for label, offset in _DRAG_CASES:
+        dragged_position = start_position + offset
+        call_count = {"n": 0}
 
-    def fake_get_world_pose():
-        call_count["n"] += 1
-        if call_count["n"] < _SETTLE_CALLS:
-            return start_position, start_orientation
-        return dragged_position, start_orientation
+        def fake_get_world_pose(dragged_position=dragged_position, call_count=call_count):
+            call_count["n"] += 1
+            if call_count["n"] < _SETTLE_CALLS:
+                return start_position, start_orientation
+            return dragged_position, start_orientation
 
-    target.get_world_pose = fake_get_world_pose
+        target.get_world_pose = fake_get_world_pose
 
-    teleop.run_teleop_loop(simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS)
+        teleop.run_teleop_loop(simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS)
 
-    # Constructed only after run_teleop_loop's own SingleArticulation goes out of scope.
-    verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name="verify_robot")
-    verify_robot.initialize()
-    idx_list = [verify_robot.get_dof_index(x) for x in j_names]
-    end_positions = verify_robot.get_joint_positions(idx_list)
-    max_delta = float(np.max(np.abs(end_positions - start_positions)))
-    print(f"[test_mefron_teleop_headless] max joint-position delta: {max_delta:.4f} rad", flush=True)
-    if max_delta < 0.05:
-        print(
-            "[test_mefron_teleop_headless] FAIL: robot did not move meaningfully in response to the simulated drag.",
-            flush=True,
-        )
+        # Constructed only after run_teleop_loop's own SingleArticulation goes out of scope.
+        verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name=f"verify_robot_{label}")
+        verify_robot.initialize()
+        idx_list = [verify_robot.get_dof_index(x) for x in j_names]
+        end_positions = verify_robot.get_joint_positions(idx_list)
+        max_delta = float(np.max(np.abs(end_positions - start_positions)))
+        print(f"[test_mefron_teleop_headless] [{label}] max joint-position delta: {max_delta:.4f} rad", flush=True)
+        if max_delta < 0.05:
+            print(
+                f"[test_mefron_teleop_headless] FAIL ({label}): robot did not move meaningfully in response to the simulated drag.",
+                flush=True,
+            )
+            all_passed = False
+        else:
+            print(f"[test_mefron_teleop_headless] PASS ({label}): robot followed the simulated drag.", flush=True)
+        del verify_robot  # must go out of scope before the next case's run_teleop_loop() builds its own
+
+    if all_passed:
+        print("[test_mefron_teleop_headless] OVERALL PASS: robot followed the simulated drag in both directions.", flush=True)
     else:
-        print("[test_mefron_teleop_headless] PASS: robot followed the simulated drag.", flush=True)
+        print("[test_mefron_teleop_headless] OVERALL FAIL: see per-direction results above.", flush=True)
 
     simulation_app.close()
 

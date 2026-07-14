@@ -1,5 +1,4 @@
-"""Shared library backing the mefron family of scripts (mefron.py, mefron_gripper_probe.py,
-mefron_grasp_editor_scene.py, franka_grasp_editor_scene.py, test_mefron_*_headless.py).
+"""Shared library backing the mefron family of scripts (mefron.py, test_mefron_*_headless.py).
 
 Deliberately empty: entry-point scripts must create SimulationApp and run
 kit_bootstrap.preload_real_packaging() *before* importing config/grasp/robot/teleop (those import

@@ -81,7 +81,6 @@ def import_cr5(
     fixed-base import doesn't reproduce. `fix_base=False` matches that
     shape instead: no root joint at all, `ArticulationRootAPI` lands
     directly on the base link's own Xform, free/dynamic body.
-    """
 
     `default_drive_strength`/`default_position_drive_damping` default to
     the CR5's own tuning -- a workaround for its URDF's degenerate

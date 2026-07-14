@@ -90,10 +90,17 @@ def get_obstacles():
 
 def setup_motion_gen():
     from curobo.types.base import TensorDeviceType
-    from curobo.util_file import get_robot_configs_path, join_path, load_yaml
+    from curobo.util_file import load_yaml
     from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
-    robot_cfg = load_yaml(join_path(get_robot_configs_path(), config.FRANKA_MOTION_GEN_ROBOT_CFG))["robot_cfg"]
+    # cr5.yml is repo-local, not cuRobo-bundled -- cuRobo's loader always resolves urdf_path/
+    # asset_root_path/collision_spheres against its own bundled content dirs, so these must be patched
+    # to absolute paths ourselves, same as build_scene.py's setup_curobo_motion_gen() already does.
+    robot_cfg = load_yaml(str(config.CR5_CUROBO_CONFIG_PATH))["robot_cfg"]
+    kinematics = robot_cfg["kinematics"]
+    kinematics["urdf_path"] = str(config.REPO_ROOT / kinematics["urdf_path"])
+    kinematics["asset_root_path"] = str(config.REPO_ROOT / kinematics["asset_root_path"])
+    kinematics["collision_spheres"] = str(config.CR5_CUROBO_CONFIG_PATH.parent / kinematics["collision_spheres"])
     # A real, populated world must be passed at construction time, or update_world()/warmup() later fail.
     world_cfg = get_obstacles()
     motion_gen_config = MotionGenConfig.load_from_robot_config(
@@ -180,8 +187,15 @@ def run_teleop_loop(
         quaternion=tensor_args.to_device(np.array(config.MOUNT_ORIENTATION_WXYZ)),
     )
 
-    j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
-    default_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    # cr5.yml's cspace.joint_names includes the gripper finger joints (mirroring franka.yml's own
+    # convention) -- masked down to arm-only here so the arm's own periodic waypoint-apply below never
+    # fights the gripper-override block's every-frame write to the same DOF indices (a real, confirmed
+    # bug on the CR5+PGC-140 build_scene.py path; ported the same fix here rather than relying on luck).
+    all_j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
+    all_retract_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    _arm_mask = [name not in config.GRIPPER_JOINT_NAMES for name in all_j_names]
+    j_names = [name for name, is_arm in zip(all_j_names, _arm_mask) if is_arm]
+    default_config = all_retract_config[_arm_mask]
     ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     robot = None
@@ -313,7 +327,10 @@ def run_teleop_loop(
             print(f"[mefron] teleop plan_single success={result.success.item()}", flush=True)
             if result.success.item():
                 cmd_plan = motion_gen.get_full_js(result.get_interpolated_plan())
-                cmd_plan = cmd_plan.get_ordered_joint_state(sim_js_names)
+                # Reorder to the arm-only j_names (not the full sim_js_names) -- this is the piece that
+                # actually matters: idx_list is arm-only length now, so cmd_state.position must be too,
+                # or ArticulationAction ends up misapplying arm values against gripper DOF indices.
+                cmd_plan = cmd_plan.get_ordered_joint_state(j_names)
                 cmd_idx = 0
                 # This specific plan's intended per-waypoint duration (MotionGenResult-level, not MotionGen-level).
                 interpolation_dt = result.interpolation_dt

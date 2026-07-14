@@ -40,11 +40,17 @@ def compute_grasp_approach_pose_from_file(
 ):
     """Loads a Grasp-Editor-exported isaac_grasp yaml via Isaac Sim's own
     isaacsim.robot_setup.grasp_editor API, recomputed from the part's live pose on every call.
-    The exported grasp is relative to panda_hand (Grasp Editor's own gripper_frame) -- no further
-    conversion needed, since cuRobo's own franka.yml sets `kinematics.ee_link: "panda_hand"`, i.e.
-    /World/target (what this feeds) already *is* panda_hand's frame, not the URDF's separate, unused
-    `ee_link` link 0.1m further out (confirmed by reading franka.yml directly, not assumed from the URDF
-    alone -- an earlier version of this function wrongly composed that 0.1m offset in)."""
+    The returned pose is directly usable as /World/target's world pose ONLY if the yaml's own
+    gripper_frame (whatever prim the Grasp Editor scene used) is the same frame as the active cuRobo
+    config's kinematics.ee_link -- otherwise it's some other link/root's pose, not the end-effector's,
+    and needs an extra conversion this function does not perform. Confirmed true for the Franka case
+    (`franka.yml`'s `ee_link: "panda_hand"` matches the Grasp Editor tutorial's own gripper-only
+    `/World/panda_hand` asset exactly, no offset needed -- an earlier version of this function wrongly
+    assumed a further 0.1m URDF ee_link offset was needed and was fixed by reading franka.yml directly).
+    NOT yet confirmed for the CR5+PGC-140 case: that Grasp Editor asset was built from the full arm+
+    gripper (not gripper-only like panda_hand), so its gripper_frame may be the whole articulation's
+    root rather than `cr5.yml`'s `ee_link: "pgc140_base_link"` -- see CLAUDE.md/the mefron CR5 port plan
+    for how this was resolved before trusting this function's output for that config."""
     from isaacsim.robot_setup.grasp_editor import import_grasps_from_file
 
     grasp_spec = import_grasps_from_file(str(yaml_path))

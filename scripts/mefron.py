@@ -43,9 +43,8 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
+    robot.mount_cr5()
     robot.apply_gripper_friction()
-    robot.stiffen_gripper_drive()
 
     stage = omni.usd.get_context().get_stage()
     for status_path in [config.ROBOT_PRIM_PATH, *config.OBSTACLE_PRIM_PATHS]:

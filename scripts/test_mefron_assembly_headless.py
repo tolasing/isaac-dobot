@@ -49,9 +49,8 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
+    robot.mount_cr5()
     robot.apply_gripper_friction()
-    robot.stiffen_gripper_drive()
 
     print("[test_mefron_assembly_headless] warming up cuRobo motion_gen...", flush=True)
     motion_gen, robot_cfg = teleop.setup_motion_gen()
