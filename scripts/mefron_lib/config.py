@@ -112,7 +112,7 @@ ASSEMBLY_RELATIONSHIPS = {
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",
         "local_position": [-0.05765, 0.02069, 0.01565],
-        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "local_orientation_wxyz": [0.0, 0.0, 0.0, 1.0],
     },
     "backpanel_support_on_main_holder": {
         "part_prim_path": "/World/backpanel_support",
@@ -128,7 +128,7 @@ ASSEMBLY_RELATIONSHIPS = {
     "pcb_assembly_on_backpanel_support": {
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
         "mount_prim_path": "/World/backpanel_support",
-        "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.004999995231628418],
+        "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.008999995231628418],
         "local_orientation_wxyz": [0.7063401483274144, 0.0, 0.0, 0.7078725837753616],
     },
 }
