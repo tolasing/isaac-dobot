@@ -27,12 +27,16 @@ FRANKA_DRIVE_DAMPING = 52.35988
 FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 
 # Nearby scene objects within the Franka's reach envelope, not the whole /World/Factory backdrop
-# (which would add scan time for no benefit).
+# (which would add scan time for no benefit). Includes both robots' own prim paths so each arm's
+# cuRobo world treats the OTHER arm as a real collision obstacle -- teleop.get_obstacles() excludes
+# an arm from its own obstacle world via ignore_substring, not by leaving it out of this list.
 OBSTACLE_PRIM_PATHS = [
     "/World/packing_table",
     "/World/packing_table_01",
     "/World/main_holder_jig",
     MOUNT_PLATE_PRIM_PATH,
+    ROBOT_PRIM_PATH,
+    "/World/Franka2",  # must match ROBOT_2_PRIM_PATH below (defined later in this file)
 ]
 
 # Loop-timing constants for teleop.run_teleop_loop(), ported from build_scene.py.
@@ -132,3 +136,167 @@ ASSEMBLY_RELATIONSHIPS = {
         "local_orientation_wxyz": [0.7063401483274144, 0.0, 0.0, 0.7078725837753616],
     },
 }
+
+# --- Second arm (see docs/mefron-history.md / the "second arm" plan) -------------------------
+# `/World/sektion_cabinet_instanceable_01` is a second SEKTION cabinet the user placed by hand in
+# the GUI for a second Franka to stand on. MOUNT_2_POSITION/MOUNT_2_ORIENTATION_WXYZ are the
+# user-confirmed live pose (Property panel: Translate [3.81539, -4.19785, 0.7924], Orient
+# [0, 0, 180] degrees -- 180 deg about Z is wxyz [0, 0, 0, 1]), replacing an earlier first-pass
+# plate-offset guess.
+ROBOT_2_PRIM_PATH = "/World/Franka2"
+MOUNT_2_POSITION = [3.81539, -4.19785, 0.7924]
+MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
+TARGET_2_PRIM_PATH = "/World/target2"
+
+# Suction gripper end-effector, added onto arm 2 only (arm 1 keeps the Franka's stock parallel-jaw
+# hand) -- see robots/ur10_suction/SOURCE.md for provenance. Referenced under panda_hand, cuRobo's
+# own franka.yml ee_link (see grasp.py's docstring), so it rides along rigidly with the gripper frame.
+SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "ur10_suction" / "short_gripper.usd"
+SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
+# Derived, not jogged, from LIVE stage poses (not the raw URDF text): solved so the asset's own
+# "wrist" child prim's frame becomes EXACTLY coincident (position AND orientation) with panda_hand's
+# OWN frame (the real mechanical flange point) -- t_hand_root = t_target - R_hand_root @ t_root_wrist,
+# R_hand_root = R_target @ R_root_wrist.T, where T_root_wrist is "wrist"'s pose within the gripper
+# asset's own root (read live via grasp.compute_relative_pose(), not assumed from the URDF) and
+# T_target is panda_hand's own frame (identity -- NOT ee_link's frame 0.1m further out: with
+# hide_hand_housing() hiding panda_hand's own visual mesh, mounting at ee_link left a visible gap
+# back to the last visible link, panda_link7, where panda_hand's now-invisible housing used to
+# visually bridge that 0.1m). Verified live: composing T_hand_root with T_root_wrist reproduces the
+# identity target to ~1e-17. A first pass at this (see git history) aligned only the
+# wrist->suction_cup axis via Rodrigues' formula, leaving rotation *around* that axis
+# arbitrary/unconstrained -- looked visibly twisted despite the axis itself being right. This version
+# has no free parameter: it matches the gripper's whole frame, not one axis.
+SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, -0.06]
+SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [0.0, 0.7071067811865475, 0.0, 0.7071067811865477]
+
+# Exactly the extension set isaacsim.exp.full.kit adds on top of isaacsim.exp.base.python.kit
+# (diffed directly from both .kit files' [dependencies] tables). Mounting a second Franka (a second
+# native URDF import in one process) crashes Kit's isaacsim.asset.importer.urdf plugin if these are
+# already loaded at import time -- confirmed live -- but enabling them AFTER both Frankas are mounted
+# reproduces the identical final feature set with zero crash (confirmed live: all 122 enable cleanly,
+# zero failures, matching what mefron.py needs for its Physics debug-viz menu). See
+# robot.mount_franka()'s own docstring and kit_experience.enable_full_experience_extensions().
+FULL_EXPERIENCE_EXTRA_EXTENSIONS = [
+    "isaacsim.app.setup",
+    "isaacsim.asset.gen.omap",
+    "isaacsim.asset.gen.omap.ui",
+    "isaacsim.asset.importer.heightmap",
+    "isaacsim.asset.validation",
+    "isaacsim.examples.browser",
+    "isaacsim.examples.extension",
+    "isaacsim.examples.interactive",
+    "isaacsim.exp.base",
+    "isaacsim.gui.components",
+    "isaacsim.replicator.behavior.ui",
+    "isaacsim.replicator.grasping.ui",
+    "isaacsim.replicator.scene_blox",
+    "isaacsim.replicator.synthetic_recorder",
+    "isaacsim.robot.manipulators.examples",
+    "isaacsim.robot.manipulators.ui",
+    "isaacsim.robot.surface_gripper.ui",
+    "isaacsim.robot.wheeled_robots.ui",
+    "isaacsim.robot_setup.assembler",
+    "isaacsim.robot_setup.gain_tuner",
+    "isaacsim.robot_setup.grasp_editor",
+    "isaacsim.robot_setup.xrdf_editor",
+    "isaacsim.sensors.camera.ui",
+    "isaacsim.sensors.physics.examples",
+    "isaacsim.sensors.physics.ui",
+    "isaacsim.sensors.physx.examples",
+    "isaacsim.sensors.physx.ui",
+    "isaacsim.sensors.rtx.ui",
+    "isaacsim.util.camera_inspector",
+    "isaacsim.util.merge_mesh",
+    "isaacsim.util.physics",
+    "omni.anim.curve.bundle",
+    "omni.anim.shared.core",
+    "omni.asset_validator.ui",
+    "omni.graph.bundle.action",
+    "omni.graph.visualization.nodes",
+    "omni.graph.window.action",
+    "omni.graph.window.generic",
+    "omni.importer.onshape",
+    "omni.isaac.block_world",
+    "omni.isaac.extension_templates",
+    "omni.isaac.gain_tuner",
+    "omni.isaac.grasp_editor",
+    "omni.isaac.occupancy_map",
+    "omni.isaac.occupancy_map.ui",
+    "omni.isaac.physics_inspector",
+    "omni.isaac.range_sensor.examples",
+    "omni.isaac.range_sensor.ui",
+    "omni.isaac.robot_assembler",
+    "omni.isaac.robot_description_editor",
+    "omni.isaac.scene_blox",
+    "omni.isaac.synthetic_recorder",
+    "omni.isaac.throttling",
+    "omni.kit.actions.window",
+    "omni.kit.asset_converter",
+    "omni.kit.browser.asset",
+    "omni.kit.browser.material",
+    "omni.kit.collaboration.channel_manager",
+    "omni.kit.context_menu",
+    "omni.kit.converter.cad",
+    "omni.kit.graph.delegate.default",
+    "omni.kit.hotkeys.window",
+    "omni.kit.manipulator.transform",
+    "omni.kit.mesh.raycast",
+    "omni.kit.preferences.animation",
+    "omni.kit.profiler.window",
+    "omni.kit.property.collection",
+    "omni.kit.property.layer",
+    "omni.kit.quicklayout",
+    "omni.kit.renderer.capture",
+    "omni.kit.renderer.core",
+    "omni.kit.scripting",
+    "omni.kit.search.files",
+    "omni.kit.selection",
+    "omni.kit.stage.copypaste",
+    "omni.kit.stage.mdl_converter",
+    "omni.kit.stage_column.payload",
+    "omni.kit.stage_column.variant",
+    "omni.kit.stage_templates",
+    "omni.kit.stagerecorder.bundle",
+    "omni.kit.tool.asset_exporter",
+    "omni.kit.tool.remove_unused.controller",
+    "omni.kit.tool.remove_unused.core",
+    "omni.kit.uiapp",
+    "omni.kit.usda_edit",
+    "omni.kit.variant.editor",
+    "omni.kit.variant.presenter",
+    "omni.kit.viewport.actions",
+    "omni.kit.viewport.bundle",
+    "omni.kit.viewport.rtx",
+    "omni.kit.viewport_widgets_manager",
+    "omni.kit.widget.cache_indicator",
+    "omni.kit.widget.collection",
+    "omni.kit.widget.extended_searchfield",
+    "omni.kit.widget.filebrowser",
+    "omni.kit.widget.layers",
+    "omni.kit.widget.live",
+    "omni.kit.widget.schema_api",
+    "omni.kit.widget.timeline",
+    "omni.kit.widget.versioning",
+    "omni.kit.widgets.custom",
+    "omni.kit.window.collection",
+    "omni.kit.window.commands",
+    "omni.kit.window.cursor",
+    "omni.kit.window.extensions",
+    "omni.kit.window.file",
+    "omni.kit.window.filepicker",
+    "omni.kit.window.material",
+    "omni.kit.window.material_graph",
+    "omni.kit.window.preferences",
+    "omni.kit.window.quicksearch",
+    "omni.kit.window.script_editor",
+    "omni.kit.window.stats",
+    "omni.kit.window.title",
+    "omni.kit.window.usd_paths",
+    "omni.physx.asset_validator",
+    "omni.physx.bundle",
+    "omni.resourcemonitor",
+    "omni.simready.explorer",
+    "omni.stats",
+    "omni.usd.metrics.assembler.physics",
+    "omni.usd.schema.scene.visualization",
+]

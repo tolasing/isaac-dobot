@@ -152,6 +152,28 @@ Currently open issues (see the linked docs for full diagnosis):
   anonymous stage with content brought in via `add_reference_to_stage()`
   (what `build_scene_mefron.py` does) avoids this entirely. Full detail:
   `docs/mefron-history.md`.
+- **This importer side effect also silently rewrites `mefron.usd` itself
+  on every run — not just a stray Ctrl+S risk, an unconditional one.**
+  Confirmed live: running any mefron entry-point script (including a
+  plain headless verification run with zero explicit save call anywhere
+  in this repo's code) changes `mefron.usd`'s on-disk hash every time,
+  growing it by however much the just-imported Franka(s) add. Setting the
+  stage's edit target to its session layer (`stage.GetSessionLayer()`,
+  USD's own built-in "never included in a save" mechanism) does **not**
+  prevent this — confirmed by testing against a scratch copy of the
+  scene — so the importer is authoring directly onto the root layer
+  regardless of the current edit target, not respecting `EditTarget` at
+  all. No real fix currently applied; the actual fix would be the
+  anonymous-stage-plus-reference architecture above, which isn't usable
+  yet for the reason given in `build_scene_mefron.py`'s own section
+  above. Until then: (a) treat any diff on `mefron.usd`/
+  `configuration/*.usd` after a run as expected noise, not a sign of a
+  new bug, (b) never blindly `git checkout` this file — it may carry
+  real hand-placed scene edits (e.g. mount-plate positions) alongside the
+  incidental Franka bake-in, so reconcile by hand, (c) when testing
+  headlessly, prefer running against a scratch copy of
+  `assets/mefron/factory floor/` rather than the real file, to avoid
+  adding to the noise.
 - **`SimulationApp` full experience breaks cuRobo's `packaging` import.**
   Passing `experience=.../isaacsim.exp.full.kit` (needed for the Physics
   debug-visualization menu) makes `from packaging import version` resolve
