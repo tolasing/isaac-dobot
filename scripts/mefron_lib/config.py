@@ -139,16 +139,22 @@ ASSEMBLY_RELATIONSHIPS = {
     # relative to a reference frame" math (grasp.compute_part_target_pose() never reads
     # part_prim_path on this call path). mount_prim_path=part_prim_path=screen on purpose: this is
     # the suction gripper's own *approach target*, expressed in screen's live frame, not a carried
-    # part's mount pose. Derived by scripts/mefron_screen_approach_probe.py: screen's bbox top face +
-    # a small hover clearance, gripper pointing straight down (screen's own rotation is pure-Z --
-    # confirmed live, it's lying flat, not tilted -- so "approach from directly above" is
-    # geometrically justified). First pass: visually confirm/re-derive once seen, same caveat
-    # docs/grasp-and-assembly-offsets.md's own methodology already carries for the other 3 entries.
+    # part's mount pose. Re-derived live 2026-07-17 by hand-jogging target2 until the cup tip sat
+    # dead-center on screen's top face (tip at [0.0007, -0.0008, -0.0049] in screen's frame) and
+    # reading back target2-wrt-screen via grasp.compute_relative_pose() -- same methodology as
+    # docs/grasp-and-assembly-offsets.md. This supersedes the first-pass
+    # scripts/mefron_screen_approach_probe.py bbox-top derivation, which was wrong twice over: it
+    # ignored the 100mm cup length (put the *ee* ~12mm from screen's origin), and it had local z
+    # positive-side-up -- screen's own frame is flipped ~180deg about X (local +Z points DOWN in
+    # world), so "above the screen" is NEGATIVE local z. Measured contact pose was
+    # [0.00028, -0.00024, -0.10558]; the z below has SURFACE_GRIPPER_APPROACH_CLEARANCE (0.01) of
+    # hover baked in (more negative = higher in world), so S snaps to a 10mm hover from which V's
+    # SurfaceGripper (maxGripDistance 0.03) can still reach and attach.
     "suction_gripper_approach_on_screen": {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
-        "local_position": [0.0, 0.0, 0.01185],
-        "local_orientation_wxyz": [0.0, 0.728885, 0.684636, 0.0],
+        "local_position": [0.00028, -0.00024, -0.11558],
+        "local_orientation_wxyz": [0.382330, -0.000471, -0.000099, 0.924026],
     },
 }
 
@@ -197,8 +203,10 @@ SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # default is 0.01m; widened slightly for first-pass teleop-approach tolerance.
 SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
 # Hover clearance for the *teleop approach pose* (distinct from the joint's own search radius
-# above) -- how far above screen's bbox top face scripts/mefron_screen_approach_probe.py places the
-# derived approach target.
+# above) -- how far above the measured contact pose the S key's approach target sits. Baked into
+# ASSEMBLY_RELATIONSHIPS["suction_gripper_approach_on_screen"]'s local z (it can't be referenced
+# there directly -- that dict literal is defined earlier in this file), so changing this value
+# alone does nothing: re-bake the relationship's z too.
 SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
 
 # Arm 2 keys -- none collide with arm 1's J/B/K/P/C/O or dormant mefron2.py's G.

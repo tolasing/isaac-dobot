@@ -12,7 +12,7 @@ import omni.kit.app
 import omni.kit.commands
 import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
-from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from import_cr5 import import_cr5
 
@@ -211,7 +211,14 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     the Franka's own hand -- callers converting an arm to suction-only should also call
     remove_parallel_jaw_gripper()/hide_hand_housing() first (see mefron.py). No suction control
     (attach/detach, keyboard key) is wired up yet. Positioned at config.SUCTION_GRIPPER_LOCAL_POSITION/ORIENTATION_WXYZ --
-    see that constant's own comment for how it was derived from the asset's own geometry."""
+    see that constant's own comment for how it was derived from the asset's own geometry.
+
+    Unlike the borrowed UR10 asset, this custom SolidWorks-exported flange comes in with a baked-in
+    collider on its own mesh (confirmed live 2026-07-17: a PhysX raycast from the cup tip along
+    panda_hand's own +Z self-hit this asset's Revolve1/Mesh at distance 0.0, before ever reaching
+    outward -- silently breaking attach_surface_gripper_physics()'s grab raycast, since the ray
+    starts sitting right on this mesh's own surface). Stripped below so the asset is genuinely
+    visual-only, matching every comment in this module that already assumed that."""
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     gripper_prim_path = f"{prim_path}/panda_hand/{config.SUCTION_GRIPPER_PRIM_NAME}"
@@ -229,16 +236,33 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
         orientation=np.array(config.SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ),
     )
 
+    gripper_prim = stage.GetPrimAtPath(gripper_prim_path)
+    for prim in Usd.PrimRange(gripper_prim):
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+
 
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
     prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by
-    attach_suction_gripper() has zero physics of its own). Deliberately minimal: one plain
-    UsdPhysics.Joint tagged with IsaacAttachmentPointAPI (body0 + forwardAxis only -- no
-    PhysicsLimitAPI/PhysicsDriveAPI compliance tuning) plus the IsaacSurfaceGripper bookkeeping prim
-    pointing at it. body1 left unbound; the SurfaceGripperManager rebinds it live to whatever it
-    finds within max_grip_distance at close time -- see robots/ur10_suction/short_gripper.usd's own
-    Suction_Joint for the equivalent pattern on the borrowed asset this one supersedes.
+    attach_suction_gripper() has zero physics of its own -- that function strips any collider its
+    USD source brings in, see its own docstring for why that stripping is load-bearing here).
+    One plain UsdPhysics.Joint tagged with IsaacAttachmentPointAPI, plus PhysicsLimitAPI/
+    PhysicsDriveAPI compliance tuning (values taken directly from NVIDIA's own bundled reference,
+    isaacsim.robot.surface_gripper's data/SurfaceGripper_gantry.usda) so the joint actually
+    constrains the grabbed object once attached -- confirmed live 2026-07-17 that without this, the
+    joint is a fully-free D6 (the schema's own documented default): the manager reports
+    Closed/gripped correctly, but nothing physically holds the object, so lifting leaves it behind.
+    transX/transY are locked (schema semantics: low > high == locked, per PhysicsLimitAPI's own
+    doc); transZ gets a small compliant range + spring (give along the suction axis, like a real cup
+    flexing slightly); rotX/rotY get a looser spring (tilt compliance); rotZ is much stiffer
+    (resists the object spinning about the suction axis itself). This authoring happens before
+    Play/attach, so the low>high locked-axis convention is honored by the initial parse -- hot-
+    patching an already-live joint mid-session needs a tiny valid range instead, not an inverted one.
+    plus the IsaacSurfaceGripper bookkeeping prim pointing at it. body1 left unbound; the
+    SurfaceGripperManager rebinds it live to whatever it finds within max_grip_distance at close
+    time -- see robots/ur10_suction/short_gripper.usd's own Suction_Joint for the equivalent pattern
+    on the borrowed asset this one supersedes.
     excludeFromArticulation is the one physics attribute that ISN'T optional here: panda_hand is a
     real articulation link, and without it PhysX tries to fold this joint into the Franka's own
     reduced-coordinate solve instead of treating it as an auxiliary maximal-coordinate constraint."""
@@ -267,6 +291,25 @@ def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) ->
     # only this one doesn't. Authoring the real token directly instead.
     joint_prim.AddAppliedSchema("IsaacAttachmentPointAPI")
     joint_prim.CreateAttribute("isaac:forwardAxis", Sdf.ValueTypeNames.Token, custom=False).Set("Z")
+    joint_prim.CreateAttribute("isaac:clearanceOffset", Sdf.ValueTypeNames.Float, custom=False).Set(0.008)
+
+    for axis in ("transX", "transY"):
+        limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
+        limit.CreateLowAttr().Set(1.0)
+        limit.CreateHighAttr().Set(-1.0)  # low > high == locked, per PhysicsLimitAPI's own schema doc
+
+    limit_z = UsdPhysics.LimitAPI.Apply(joint_prim, "transZ")
+    limit_z.CreateLowAttr().Set(0.0)
+    limit_z.CreateHighAttr().Set(0.01)
+    drive_z = UsdPhysics.DriveAPI.Apply(joint_prim, "transZ")
+    drive_z.CreateStiffnessAttr().Set(5000.0)
+    drive_z.CreateDampingAttr().Set(100.0)
+
+    for axis, stiffness in (("rotX", 100.0), ("rotY", 100.0), ("rotZ", 10000.0)):
+        limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
+        limit.CreateLowAttr().Set(-3.0)
+        limit.CreateHighAttr().Set(3.0)
+        UsdPhysics.DriveAPI.Apply(joint_prim, axis).CreateStiffnessAttr().Set(stiffness)
 
     gripper_prim = robot_schema.CreateSurfaceGripper(stage, gripper_path)
     gripper_prim.GetAttribute(robot_schema.Attributes.MAX_GRIP_DISTANCE.name).Set(config.SURFACE_GRIPPER_MAX_GRIP_DISTANCE)
