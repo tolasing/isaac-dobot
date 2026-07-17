@@ -1,7 +1,9 @@
 """Interactive cuRobo teleop loop: builds each arm's draggable target, warms up its MotionGen, and
-runs the drag-follow plan/apply loop with gripper open/close and (arm 1 only, for now) P/J/B
-assembly/grasp-editor pose snaps (one key per config.GRASP_TARGETS entry). run_teleop_loop() takes a
-list of per-arm dicts so multiple robots can each drag-follow their own target off one shared
+runs the drag-follow plan/apply loop with gripper open/close, arm 1's J/B/K assembly/grasp-editor
+pose snaps (one key per config.GRASP_TARGETS entry), and P -- assembly placement, wired to whichever
+arms have an assembly_control in their arm dict (arm 1 via GripperKeyboardControl, arm 2 via
+AssemblyPlacementControl -- see build_assembly_placement_keyboard_control()). run_teleop_loop() takes
+a list of per-arm dicts so multiple robots can each drag-follow their own target off one shared
 timeline/simulation_app.update() tick -- see its own docstring for the required dict shape. See
 docs/mefron-history.md for the Stop/Play-rebuild and physics-timing gotchas this loop works around.
 """
@@ -158,6 +160,52 @@ def build_suction_approach_keyboard_control(key: str = config.SUCTION_APPROACH_K
     def _on_keyboard_event(event) -> bool:
         if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == request_input:
             control.request_approach()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
+class AssemblyPlacementControl:
+    """One-shot 'place the carried part at its assembly pose' request for an arm with no
+    GripperKeyboardControl of its own (arm 2 -- see that class's own docstring for why a real one
+    would crash it). Same has_pending/consume peek pair as GripperKeyboardControl's P handling
+    (not SuctionApproachControl's immediate-consume shape): the carried part needs the same
+    two-stage lift-then-drop as arm 1's P, so the request must survive across frames until the robot
+    goes idle, not be consumed while a plan is still in flight."""
+
+    def __init__(self) -> None:
+        self._requested = False
+
+    def request_placement(self) -> None:
+        self._requested = True
+
+    def has_pending_placement_request(self) -> bool:
+        return self._requested
+
+    def consume_placement_request(self) -> bool:
+        requested = self._requested
+        self._requested = False
+        return requested
+
+
+def build_assembly_placement_keyboard_control(key: str = "P") -> AssemblyPlacementControl:
+    """A second, independent keyboard subscription for P -- arm 1's GripperKeyboardControl already
+    owns its own P subscription (see build_gripper_keyboard_control()'s docstring: concurrent
+    subscriptions each see the same keypress), so one P press fires both arms' handlers."""
+    import carb.input
+    import omni.appwindow
+
+    control = AssemblyPlacementControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    request_input = getattr(carb.input.KeyboardInput, key)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == request_input:
+            control.request_placement()
         return True
 
     control._keyboard = keyboard
@@ -347,6 +395,22 @@ def _fresh_arm_state() -> dict:
     }
 
 
+def _snap_target_to_assembly_lift_waypoint(state: dict, target, ee_link_prim_path: str, relationship_name: str):
+    """Shared by every arm's P handling (GripperKeyboardControl for arm 1, AssemblyPlacementControl
+    for arm 2): computes the carried part's final assembly-placement pose via
+    compute_assembly_grasp_target(), stages it in state["pending_final_pose"], and snaps `target` to
+    an intermediate waypoint first -- final X/Y and final orientation, but held at the constant
+    ASSEMBLY_LIFT_HEIGHT -- so the only motion left once that lift plan finishes is a straight drop
+    in Z. A direct plan to the final pose was dragging/clipping the carried object through the table
+    and nearby props. Returns the new (cube_position, cube_orientation) for the caller's locals."""
+    final_position, final_orientation = compute_assembly_grasp_target(ee_link_prim_path, relationship_name)
+    state["pending_final_pose"] = (final_position, final_orientation)
+    cube_position = np.array([final_position[0], final_position[1], config.ASSEMBLY_LIFT_HEIGHT])
+    cube_orientation = final_orientation
+    target.set_world_pose(position=cube_position, orientation=cube_orientation)
+    return cube_position, cube_orientation
+
+
 def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     """One frame's worth of drag-follow-plan/apply + gripper-apply logic for a single arm, mutating
     arm["_state"] in place. Split out of run_teleop_loop() so multiple arms can each run their own
@@ -422,9 +486,18 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
             # anything -- and the CURRENT in-flight plan's completion would then wrongly consume
             # pending_final_pose, sending the robot straight from wherever it was to the final
             # assembly pose with no hover stop at all.
-            if state["cmd_plan"] is None:
+            if gripper_control.last_grasped_object is None:
+                # Nothing grasped yet this session -- discard the stale request instead of
+                # defaulting to finger_print_scanner sight-unseen. Arm 1 sharing the P key with arm
+                # 2 (see AssemblyPlacementControl) means every P press reaches here even when the
+                # user only meant to place arm 2's screen; without this guard arm 1 would swing
+                # toward finger_print_scanner's mount pose on every such press, both moving an arm
+                # the user didn't intend to move and cluttering arm 2's obstacle-avoided workspace
+                # right as it plans its own placement.
                 gripper_control.consume_assembly_target_request()
-                object_name = gripper_control.last_grasped_object or "finger_print_scanner"
+            elif state["cmd_plan"] is None:
+                gripper_control.consume_assembly_target_request()
+                object_name = gripper_control.last_grasped_object
                 # Looked up by part_prim_path rather than assuming a "{object_name}_on_main_holder"
                 # key -- not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
                 part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
@@ -433,15 +506,9 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
                     if relationship["part_prim_path"] == part_prim_path
                 )
-                final_position, final_orientation = compute_assembly_grasp_target(ee_link_prim_path, relationship_name)
-                state["pending_final_pose"] = (final_position, final_orientation)
-                # Snap to an aligned waypoint first -- final X/Y and final orientation, but held at the
-                # constant ASSEMBLY_LIFT_HEIGHT -- so the only motion left for the second (pending_final_pose)
-                # leg is a straight drop in Z. A direct plan to the final pose was dragging/clipping the
-                # carried object through the table and nearby props.
-                cube_position = np.array([final_position[0], final_position[1], config.ASSEMBLY_LIFT_HEIGHT])
-                cube_orientation = final_orientation
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
+                cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
+                    state, target, ee_link_prim_path, relationship_name
+                )
         else:
             requested_object = gripper_control.consume_grasp_approach_from_file_request()
             if requested_object is not None:
@@ -468,6 +535,22 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     if suction_control is not None and suction_control.consume_approach_request():
         cube_position, cube_orientation = compute_part_target_pose(arm["suction_approach_relationship"])
         target.set_world_pose(position=cube_position, orientation=cube_orientation)
+
+    # One-shot assembly-placement snap for arms with no GripperKeyboardControl of their own (arm 2's
+    # AssemblyPlacementControl -- bound to the same P key as arm 1's gripper_control above via a
+    # second, independent keyboard subscription, so one P press can drive both arms). Same
+    # idle-gating as arm 1's P and the same reason: peek, don't consume, until state["cmd_plan"] is
+    # None, or an in-flight plan's completion would wrongly consume pending_final_pose.
+    assembly_control = arm.get("assembly_control")
+    if (
+        assembly_control is not None
+        and assembly_control.has_pending_placement_request()
+        and state["cmd_plan"] is None
+    ):
+        assembly_control.consume_placement_request()
+        cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
+            state, target, ee_link_prim_path, arm["assembly_relationship"]
+        )
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:

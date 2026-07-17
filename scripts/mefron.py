@@ -102,9 +102,13 @@ def main() -> None:
     # controls are separate, independent keyboard subscriptions instead (see teleop.py).
     suction_approach_control = teleop.build_suction_approach_keyboard_control()
     surface_gripper_control = teleop.build_surface_gripper_keyboard_control(surface_gripper_path)
+    # Second, independent P subscription -- arm 1's gripper_control above already owns its own; one
+    # P press fires both (see AssemblyPlacementControl's docstring).
+    assembly_placement_control = teleop.build_assembly_placement_keyboard_control()
     print(
         f"[mefron] Arm 2 suction: press {config.SUCTION_APPROACH_KEY} to approach {config.SCREEN_PRIM_PATH}, "
-        f"{config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release.",
+        f"{config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release, "
+        "P to place on main_holder.",
         flush=True,
     )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
@@ -132,6 +136,8 @@ def main() -> None:
             "name": "arm2",
             "suction_control": suction_approach_control,
             "suction_approach_relationship": "suction_gripper_approach_on_screen",
+            "assembly_control": assembly_placement_control,
+            "assembly_relationship": "screen_on_main_holder",
         },
     ]
     teleop.run_teleop_loop(simulation_app, arms)

@@ -49,7 +49,7 @@ _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
 # World-frame Z height P holds while it aligns X/Y/orientation to the assembly-placement pose, before
 # dropping straight down in Z to the actual placement pose -- a direct point-to-point plan_single to
 # the final pose was clipping/dragging the carried object through the table and nearby props.
-ASSEMBLY_LIFT_HEIGHT = 1.3
+ASSEMBLY_LIFT_HEIGHT = 1.21
 
 # Frames to wait after is_playing() first turns True before constructing SingleArticulation --
 # PhysX needs a few real steps before its simulation view is actually ready.
@@ -128,6 +128,12 @@ ASSEMBLY_RELATIONSHIPS = {
             -5.587935447688139e-08,
             1.2951986718679054e-06,
         ],
+    },
+    "screen_on_main_holder": {
+        "part_prim_path": "/World/screen",
+        "mount_prim_path": "/World/main_holder",
+        "local_position": [0.02688002586364746, -0.012380123138427736, 0.01234102249145508],
+        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },
     "pcb_assembly_on_backpanel_support": {
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
