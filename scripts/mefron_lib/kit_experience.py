@@ -4,35 +4,42 @@ order (mounting a second Franka while these are already loaded crashes Kit's URD
 enabling them afterward doesn't). Needs omni.kit.app, so unlike kit_bootstrap.py this can only be
 imported once a SimulationApp already exists.
 
-NOT YET FULLY WORKING: enabling the full config.FULL_EXPERIENCE_EXTRA_EXTENSIONS list (~122 names)
-at runtime avoids the crash, but was observed live to blank the viewport shortly after (right when
-Kit logs "bad menu item" warnings for the newly-registered extensions' menus) -- excluding the
-obvious renderer/viewport-bundle suspects didn't fix it, so the real cause is still unconfirmed
-(possibly a window-layout reset triggered by enabling many window-owning extensions at once, not a
-renderer conflict -- unverified, no display access to check visually). Trying a much smaller,
-targeted set below instead of the full list, to narrow down what's actually needed vs. what's
-triggering the blank-out.
+A prior version of this function scaled back to a small hand-picked subset (just omni.physx.bundle,
+for the Physics debug-viz menu) after observing the full config.FULL_EXPERIENCE_EXTRA_EXTENSIONS list
+(~122 names) blank the viewport shortly after enabling. That subset traded away real functionality
+piecemeal and unpredictably (Script Editor, then isaacsim.robot_setup.grasp_editor's
+import_grasps_from_file() needed manual Window->Extensions enabling or crashed outright with
+ModuleNotFoundError) -- so this goes back to enabling the full list.
+
+Root cause of the "blanking" (confirmed by reading isaacsim.app.setup's own source, not guessed):
+it isn't a rendering/menu issue at all -- isaacsim.app.setup.CreateSetupExtension.on_startup() reads
+the carb setting /isaac/startup/create_new_stage, and if true (its own extension.toml default),
+schedules an async task a few frames out that unconditionally opens a brand-new stage, discarding
+whatever's loaded. Since this function runs after mefron.usd is already open and both Frankas are
+mounted, that fires late and wipes the running scene -- not "too many extensions at once". Forcing
+the setting off before enabling fixes it without dropping anything from the full list.
 """
 
 from __future__ import annotations
 
-# Only what CLAUDE.md actually says the full experience is *for* -- the Physics
-# debug-visualization menu -- rather than the full ~122-extension list, to shrink the blast radius
-# while the viewport-blanking cause is still unconfirmed.
-_MINIMAL_EXTENSIONS = [
-    "omni.physx.bundle",
-]
+import carb.settings
+
+from . import config
 
 
 def enable_full_experience_extensions() -> None:
-    """Enables a minimal extension set for the Physics debug-viz menu, called once right after both
-    Frankas are mounted. Scaled back from the full config.FULL_EXPERIENCE_EXTRA_EXTENSIONS list --
-    see this module's own docstring for why."""
+    """Enables config.FULL_EXPERIENCE_EXTRA_EXTENSIONS (~122 names), called once right after both
+    Frankas are mounted. See this module's own docstring for the stage-swap regression this
+    previously hit and the setting that fixes it."""
     import omni.kit.app
+
+    # Must happen before isaacsim.app.setup enables below -- see this module's docstring. Set
+    # unconditionally rather than relying on list order, since dict/list enable order isn't guaranteed.
+    carb.settings.get_settings().set_bool("/isaac/startup/create_new_stage", False)
 
     ext_manager = omni.kit.app.get_app().get_extension_manager()
     failures = []
-    for name in _MINIMAL_EXTENSIONS:
+    for name in config.FULL_EXPERIENCE_EXTRA_EXTENSIONS:
         if not ext_manager.set_extension_enabled_immediate(name, True):
             failures.append(name)
     if failures:
