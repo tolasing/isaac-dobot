@@ -109,8 +109,19 @@ Currently open issues (see the linked docs for full diagnosis):
   fingertips at grasp time, so one finger contacts first and shifts the
   part sideways. Not a joint/drive asymmetry (explicitly ruled out) — see
   `docs/grasp-and-assembly-offsets.md`.
-- Assembly placement still lands off on the Y axis — likely the same
-  grasp-centering issue, not confirmed.
+- **Assembly placement (P) still doesn't land cleanly.** Tried a proper
+  lift/translate/rotate/descend redesign 2026-07-17 (the original 2-stage lift baked the *final*
+  X/Y into the lift waypoint, so cuRobo swung sideways instead of lifting straight; a 3-stage
+  version fixed that but its combined rotate+translate leg made cuRobo hold the old orientation
+  until the very end of that leg and snap to final right at the align→descend handoff, a violent
+  kickstart) but reverted all of it after finding a deeper, unrelated issue: `ASSEMBLY_LIFT_HEIGHT`
+  is a fixed world-frame Z constant — unlike every other pose in this system, which is computed
+  relative to a live prim (`main_holder` for `ASSEMBLY_RELATIONSHIPS`, the part itself for grasp
+  approach) — so moving `main_holder` (or repositioning the assembly generally) breaks the staged
+  sequence outright, since the fixed height has no relationship to wherever things actually are.
+  Next attempt should make the lift clearance relative instead — e.g. a margin above whichever of
+  the current/final Z is higher — rather than an absolute world height. May or may not also be the
+  same grasp-centering issue below; not confirmed either way.
 - `attach_objects_to_robot()`/`detach_object_from_robot()` (cuRobo's
   carried-object collision awareness) is not yet wired to the C/O keys —
   `franka.yml` already has a spare `attached_object` link ready for it.
