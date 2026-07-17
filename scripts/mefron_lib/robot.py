@@ -217,8 +217,11 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     collider on its own mesh (confirmed live 2026-07-17: a PhysX raycast from the cup tip along
     panda_hand's own +Z self-hit this asset's Revolve1/Mesh at distance 0.0, before ever reaching
     outward -- silently breaking attach_surface_gripper_physics()'s grab raycast, since the ray
-    starts sitting right on this mesh's own surface). Stripped below so the asset is genuinely
-    visual-only, matching every comment in this module that already assumed that."""
+    starts sitting right on this mesh's own surface) plus a baked-in enabled RigidBodyAPI (confirmed
+    live 2026-07-17: PhysX logs "missing xformstack reset when child of another enabled rigid body"
+    for this prim under panda_hand once mounted -- a nested-rigid-body hierarchy, not merely a stray
+    collider). Both stripped below so the asset is genuinely visual-only, matching every comment in
+    this module that already assumed that."""
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     gripper_prim_path = f"{prim_path}/panda_hand/{config.SUCTION_GRIPPER_PRIM_NAME}"
@@ -240,13 +243,15 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     for prim in Usd.PrimRange(gripper_prim):
         if prim.HasAPI(UsdPhysics.CollisionAPI):
             UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
 
 
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
     prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by
-    attach_suction_gripper() has zero physics of its own -- that function strips any collider its
-    USD source brings in, see its own docstring for why that stripping is load-bearing here).
+    attach_suction_gripper() has zero physics of its own -- that function strips any collider/rigid-
+    body its USD source brings in, see its own docstring for why that stripping is load-bearing here).
     One plain UsdPhysics.Joint tagged with IsaacAttachmentPointAPI, plus PhysicsLimitAPI/
     PhysicsDriveAPI compliance tuning (values taken directly from NVIDIA's own bundled reference,
     isaacsim.robot.surface_gripper's data/SurfaceGripper_gantry.usda) so the joint actually

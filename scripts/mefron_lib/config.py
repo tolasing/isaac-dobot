@@ -209,10 +209,13 @@ SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
 # alone does nothing: re-bake the relationship's z too.
 SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
 
-# Arm 2 keys -- none collide with arm 1's J/B/K/P/C/O or dormant mefron2.py's G.
-SUCTION_APPROACH_KEY = "S"  # Screen: snap arm 2's target to the screen-approach pose
+# Arm 2 keys -- none collide with arm 1's J/B/K/P/C/O or dormant mefron2.py's G. S, H, and R were
+# all tried first (approach/screen and release, respectively) and confirmed live 2026-07-17 to
+# double as Kit's own viewport hotkeys, firing that Kit UI/action alongside our handler -- N and L
+# instead, neither a Kit viewport manipulator hotkey.
+SUCTION_APPROACH_KEY = "N"  # sNap arm 2's target to the screen-approach pose
 SUCTION_ATTACH_KEY = "V"  # Vacuum on
-SUCTION_DETACH_KEY = "R"  # Release
+SUCTION_DETACH_KEY = "L"  # reLease
 
 SCREEN_PRIM_PATH = "/World/screen"
 
