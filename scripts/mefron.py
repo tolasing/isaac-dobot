@@ -58,6 +58,7 @@ def main() -> None:
     robot.remove_parallel_jaw_gripper(config.ROBOT_2_PRIM_PATH)
     robot.hide_hand_housing(config.ROBOT_2_PRIM_PATH)
     robot.attach_suction_gripper(config.ROBOT_2_PRIM_PATH)
+    surface_gripper_path = robot.attach_surface_gripper_physics(config.ROBOT_2_PRIM_PATH)
 
     if not _headless:
         kit_experience.enable_full_experience_extensions()
@@ -95,8 +96,17 @@ def main() -> None:
 
     gripper_control = teleop.build_gripper_keyboard_control()
     print("[mefron] Arm 1 gripper: press C to close, O to open.", flush=True)
-    # Arm 2 has no gripper_control -- it's suction-only now, and no attach/detach control is wired
-    # up yet (see robot.attach_suction_gripper()'s own docstring).
+    # Arm 2's gripper_control must stay None -- its parallel-jaw finger joints are deactivated, and a
+    # real GripperKeyboardControl would try to resolve config.GRIPPER_JOINT_NAMES via get_dof_index()
+    # in _step_arm()'s init block, hitting its unresolved-joint-index RuntimeError. Its suction
+    # controls are separate, independent keyboard subscriptions instead (see teleop.py).
+    suction_approach_control = teleop.build_suction_approach_keyboard_control()
+    surface_gripper_control = teleop.build_surface_gripper_keyboard_control(surface_gripper_path)
+    print(
+        f"[mefron] Arm 2 suction: press {config.SUCTION_APPROACH_KEY} to approach {config.SCREEN_PRIM_PATH}, "
+        f"{config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release.",
+        flush=True,
+    )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
     arms = [
         {
@@ -120,6 +130,8 @@ def main() -> None:
             "mount_position": config.MOUNT_2_POSITION,
             "mount_orientation_wxyz": config.MOUNT_2_ORIENTATION_WXYZ,
             "name": "arm2",
+            "suction_control": suction_approach_control,
+            "suction_approach_relationship": "suction_gripper_approach_on_screen",
         },
     ]
     teleop.run_teleop_loop(simulation_app, arms)

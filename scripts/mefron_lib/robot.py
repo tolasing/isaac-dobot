@@ -12,7 +12,7 @@ import omni.kit.app
 import omni.kit.commands
 import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
-from pxr import UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, UsdGeom, UsdPhysics
 
 from import_cr5 import import_cr5
 
@@ -228,6 +228,50 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
         translation=np.array(config.SUCTION_GRIPPER_LOCAL_POSITION),
         orientation=np.array(config.SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ),
     )
+
+
+def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
+    """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
+    prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by
+    attach_suction_gripper() has zero physics of its own). Deliberately minimal: one plain
+    UsdPhysics.Joint tagged with IsaacAttachmentPointAPI (body0 + forwardAxis only -- no
+    PhysicsLimitAPI/PhysicsDriveAPI compliance tuning) plus the IsaacSurfaceGripper bookkeeping prim
+    pointing at it. body1 left unbound; the SurfaceGripperManager rebinds it live to whatever it
+    finds within max_grip_distance at close time -- see robots/ur10_suction/short_gripper.usd's own
+    Suction_Joint for the equivalent pattern on the borrowed asset this one supersedes.
+    excludeFromArticulation is the one physics attribute that ISN'T optional here: panda_hand is a
+    real articulation link, and without it PhysX tries to fold this joint into the Franka's own
+    reduced-coordinate solve instead of treating it as an auxiliary maximal-coordinate constraint."""
+    from usd.schema.isaac import robot_schema
+
+    stage = omni.usd.get_context().get_stage()
+    hand_path = f"{prim_path}/panda_hand"
+    joint_path = f"{hand_path}/{config.SURFACE_GRIPPER_JOINT_PRIM_NAME}"
+    gripper_path = f"{hand_path}/{config.SURFACE_GRIPPER_PRIM_NAME}"
+
+    for path in (joint_path, gripper_path):
+        if stage.GetPrimAtPath(path).IsValid():
+            omni.kit.commands.execute("DeletePrims", paths=[path])
+    omni.kit.app.get_app().update()
+
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([hand_path])
+    joint.CreateExcludeFromArticulationAttr().Set(True)
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*config.SURFACE_GRIPPER_LOCAL_POSITION))
+    joint.CreateLocalRot0Attr().Set(Gf.Quatf(*config.SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ))
+
+    joint_prim = joint.GetPrim()
+    # Not robot_schema.ApplyAttachmentPointAPI(): that helper calls Classes.ATTACHMENT_POINT_API.name --
+    # the plain Enum's Python identifier, "ATTACHMENT_POINT_API" -- instead of .value (the real schema
+    # name, "IsaacAttachmentPointAPI"); every sibling Apply*() in that module correctly uses .value,
+    # only this one doesn't. Authoring the real token directly instead.
+    joint_prim.AddAppliedSchema("IsaacAttachmentPointAPI")
+    joint_prim.CreateAttribute("isaac:forwardAxis", Sdf.ValueTypeNames.Token, custom=False).Set("Z")
+
+    gripper_prim = robot_schema.CreateSurfaceGripper(stage, gripper_path)
+    gripper_prim.GetAttribute(robot_schema.Attributes.MAX_GRIP_DISTANCE.name).Set(config.SURFACE_GRIPPER_MAX_GRIP_DISTANCE)
+    gripper_prim.GetRelationship(robot_schema.Relations.ATTACHMENT_POINTS.name).SetTargets([joint_path])
+    return gripper_path
 
 
 def apply_gripper_friction(prim_path: str = config.ROBOT_PRIM_PATH) -> None:

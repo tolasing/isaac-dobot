@@ -20,6 +20,7 @@ from .grasp import (
     compute_assembly_grasp_target,
     compute_grasp_approach_pose_from_file,
     compute_grasp_finger_widths_from_file,
+    compute_part_target_pose,
 )
 
 
@@ -119,6 +120,93 @@ def build_gripper_keyboard_control(
         return True
 
     # Kept alive on the control object so the subscription isn't garbage-collected.
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
+class SuctionApproachControl:
+    """One-shot 'snap arm 2's target to its screen-approach pose' request (S key), independent of
+    GripperKeyboardControl -- arm 2's gripper_control must stay None (its parallel-jaw finger joints
+    are deactivated, so a real GripperKeyboardControl would try to resolve config.GRIPPER_JOINT_NAMES
+    via get_dof_index() and hit the unresolved-joint-index RuntimeError in _step_arm()'s init block).
+    No has_pending/peek pair needed, unlike P: arm 2 has no carried-object two-stage-lift concern, so
+    an immediate one-shot consume (same shape as J/B/K's grasp-approach request) is enough."""
+
+    def __init__(self) -> None:
+        self._requested = False
+
+    def request_approach(self) -> None:
+        self._requested = True
+
+    def consume_approach_request(self) -> bool:
+        requested = self._requested
+        self._requested = False
+        return requested
+
+
+def build_suction_approach_keyboard_control(key: str = config.SUCTION_APPROACH_KEY) -> SuctionApproachControl:
+    import carb.input
+    import omni.appwindow
+
+    control = SuctionApproachControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    request_input = getattr(carb.input.KeyboardInput, key)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == request_input:
+            control.request_approach()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
+class SurfaceGripperKeyboardControl:
+    """Fires close_gripper()/open_gripper() once per keypress via the real Surface Gripper runtime
+    interface (isaacsim.robot.surface_gripper). No per-frame state machine needed here -- unlike
+    GripperKeyboardControl's ramped open/close, the extension's own SurfaceGripperManager (C++) owns
+    the Open/Closing/Closed/retry state machine; Python only needs to request a transition once."""
+
+    def __init__(self, gripper_prim_path: str) -> None:
+        import isaacsim.robot.surface_gripper._surface_gripper as surface_gripper
+
+        self.gripper_prim_path = gripper_prim_path
+        self._interface = surface_gripper.acquire_surface_gripper_interface()
+
+    def close(self) -> None:
+        self._interface.close_gripper(self.gripper_prim_path)
+
+    def open(self) -> None:
+        self._interface.open_gripper(self.gripper_prim_path)
+
+
+def build_surface_gripper_keyboard_control(
+    gripper_prim_path: str,
+    close_key: str = config.SUCTION_ATTACH_KEY,
+    open_key: str = config.SUCTION_DETACH_KEY,
+) -> SurfaceGripperKeyboardControl:
+    import carb.input
+    import omni.appwindow
+
+    control = SurfaceGripperKeyboardControl(gripper_prim_path)
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    close_input = getattr(carb.input.KeyboardInput, close_key)
+    open_input = getattr(carb.input.KeyboardInput, open_key)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if event.input == close_input:
+                control.close()
+            elif event.input == open_input:
+                control.open()
+        return True
+
     control._keyboard = keyboard
     control._input_iface = input_iface
     control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
@@ -369,6 +457,17 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 )
                 gripper_control.set_grasp_widths(open_position, closed_position)
                 gripper_control.set_closed(False)
+
+    # One-shot suction-approach snap (arm 2 only). Same "must run after the past_pose/target_pose
+    # bootstrap" ordering rule as the gripper_control block above. Ungated (no cmd_plan is None
+    # check, unlike P) -- matches J/B/K's shape instead: arm 2 has no carried-object two-stage-lift
+    # concern, and the debounce/plan-trigger logic below re-checks state["past_pose"] against the
+    # fresh cube_position on the next frame regardless of which branch wrote it, so an immediate
+    # consume here is safe.
+    suction_control = arm.get("suction_control")
+    if suction_control is not None and suction_control.consume_approach_request():
+        cube_position, cube_orientation = compute_part_target_pose(arm["suction_approach_relationship"])
+        target.set_world_pose(position=cube_position, orientation=cube_orientation)
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:

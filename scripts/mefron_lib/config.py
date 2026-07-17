@@ -135,6 +135,21 @@ ASSEMBLY_RELATIONSHIPS = {
         "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.008999995231628418],
         "local_orientation_wxyz": [0.7063401483274144, 0.0, 0.0, 0.7078725837753616],
     },
+    # Not a part-on-mount relationship like the other 3 -- reuses the same generic "dependent pose
+    # relative to a reference frame" math (grasp.compute_part_target_pose() never reads
+    # part_prim_path on this call path). mount_prim_path=part_prim_path=screen on purpose: this is
+    # the suction gripper's own *approach target*, expressed in screen's live frame, not a carried
+    # part's mount pose. Derived by scripts/mefron_screen_approach_probe.py: screen's bbox top face +
+    # a small hover clearance, gripper pointing straight down (screen's own rotation is pure-Z --
+    # confirmed live, it's lying flat, not tilted -- so "approach from directly above" is
+    # geometrically justified). First pass: visually confirm/re-derive once seen, same caveat
+    # docs/grasp-and-assembly-offsets.md's own methodology already carries for the other 3 entries.
+    "suction_gripper_approach_on_screen": {
+        "part_prim_path": "/World/screen",
+        "mount_prim_path": "/World/screen",
+        "local_position": [0.0, 0.0, 0.01185],
+        "local_orientation_wxyz": [0.0, 0.728885, 0.684636, 0.0],
+    },
 }
 
 # --- Second arm (see docs/mefron-history.md / the "second arm" plan) -------------------------
@@ -149,25 +164,49 @@ MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_2_PRIM_PATH = "/World/target2"
 
 # Suction gripper end-effector, added onto arm 2 only (arm 1 keeps the Franka's stock parallel-jaw
-# hand) -- see robots/ur10_suction/SOURCE.md for provenance. Referenced under panda_hand, cuRobo's
-# own franka.yml ee_link (see grasp.py's docstring), so it rides along rigidly with the gripper frame.
-SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "ur10_suction" / "short_gripper.usd"
+# hand). Custom-designed in SolidWorks for this Franka flange directly (Ø63mm mount face = Franka's
+# own ISO 9409-1-50 flange OD, Ø50mm suction tip -- see robots/franka_panda/Props/ for the exported
+# asset), superseding the earlier borrowed robots/ur10_suction/short_gripper.usd (still kept, see its
+# own SOURCE.md, but no longer referenced here). Referenced under panda_hand, cuRobo's own franka.yml
+# ee_link (see grasp.py's docstring), so it rides along rigidly with the gripper frame.
+SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "suction gripper.usd"
 SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
-# Derived, not jogged, from LIVE stage poses (not the raw URDF text): solved so the asset's own
-# "wrist" child prim's frame becomes EXACTLY coincident (position AND orientation) with panda_hand's
-# OWN frame (the real mechanical flange point) -- t_hand_root = t_target - R_hand_root @ t_root_wrist,
-# R_hand_root = R_target @ R_root_wrist.T, where T_root_wrist is "wrist"'s pose within the gripper
-# asset's own root (read live via grasp.compute_relative_pose(), not assumed from the URDF) and
-# T_target is panda_hand's own frame (identity -- NOT ee_link's frame 0.1m further out: with
-# hide_hand_housing() hiding panda_hand's own visual mesh, mounting at ee_link left a visible gap
-# back to the last visible link, panda_link7, where panda_hand's now-invisible housing used to
-# visually bridge that 0.1m). Verified live: composing T_hand_root with T_root_wrist reproduces the
-# identity target to ~1e-17. A first pass at this (see git history) aligned only the
-# wrist->suction_cup axis via Rodrigues' formula, leaving rotation *around* that axis
-# arbitrary/unconstrained -- looked visibly twisted despite the axis itself being right. This version
-# has no free parameter: it matches the gripper's whole frame, not one axis.
-SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, -0.06]
-SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [0.0, 0.7071067811865475, 0.0, 0.7071067811865477]
+# Unlike the borrowed UR10 asset (which needed a solved offset+rotation because its internal "wrist"
+# reference frame didn't line up with panda_hand's own axes), this asset's own root IS its mount face
+# already: verified live that both wrapper Xforms above the Mesh are identity, the Ø63mm base ring
+# sits exactly at local (0, 0, 0), and +Z runs base->tip (0 to 0.1m) -- matching panda_hand's own
+# convention of origin = flange point, +Z toward the fingers (confirmed via panda_finger_joint1/2's
+# localPos0 = (0, 0, 0.0584) on the panda_hand body). So the asset's root is already coincident with
+# panda_hand's frame with no correction needed.
+SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
+SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+
+# Real isaacsim.robot.schema/isaacsim.robot.surface_gripper physics, distinct from the SUCTION_GRIPPER_*
+# constants above (which are pure visual geometry with zero physics of its own). Kept deliberately
+# minimal -- no hand-authored PhysicsLimitAPI/PhysicsDriveAPI compliance tuning, no touching any other
+# prim's existing physics setup -- just the bare structural minimum the extension itself requires: one
+# joint tagged as an attachment point, and the IsaacSurfaceGripper bookkeeping prim pointing at it.
+SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"
+SURFACE_GRIPPER_PRIM_NAME = "SurfaceGripper"
+# Joint's frame on panda_hand's side: coincident with the cup's physical tip, 0.1m out along
+# panda_hand's own +Z -- same base->tip convention as SUCTION_GRIPPER_LOCAL_POSITION/ORIENTATION_WXYZ
+# above, just offset to the tip instead of the base.
+SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.1]
+SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# isaac:maxGripDistance -- how far the attachment point searches for something to grab. Schema
+# default is 0.01m; widened slightly for first-pass teleop-approach tolerance.
+SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
+# Hover clearance for the *teleop approach pose* (distinct from the joint's own search radius
+# above) -- how far above screen's bbox top face scripts/mefron_screen_approach_probe.py places the
+# derived approach target.
+SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
+
+# Arm 2 keys -- none collide with arm 1's J/B/K/P/C/O or dormant mefron2.py's G.
+SUCTION_APPROACH_KEY = "S"  # Screen: snap arm 2's target to the screen-approach pose
+SUCTION_ATTACH_KEY = "V"  # Vacuum on
+SUCTION_DETACH_KEY = "R"  # Release
+
+SCREEN_PRIM_PATH = "/World/screen"
 
 # Exactly the extension set isaacsim.exp.full.kit adds on top of isaacsim.exp.base.python.kit
 # (diffed directly from both .kit files' [dependencies] tables). Mounting a second Franka (a second
