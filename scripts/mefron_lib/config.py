@@ -15,10 +15,15 @@ MEFRON_CONFIGURATION_DIR = MEFRON_USD.parent / "configuration"
 
 ROBOT_PRIM_PATH = "/World/Franka"
 TARGET_PRIM_PATH = "/World/target"
-# SEKTION cabinet table the Franka mounts on (replaced the original Pedestal_plates/Cube_05 plate).
+# UR10 mount pedestal (Isaac asset: Props/Mounts/ur10_mount.usd) the Franka mounts on -- replaced
+# the original SEKTION cabinet plate (itself a replacement for Pedestal_plates/Cube_05) once the
+# packing table was swapped for a conveyor line. MOUNT_POSITION below is taken directly from this
+# prim's own authored xformOp:translate (first-pass -- its payload can't be inspected offline to
+# confirm whether its local origin sits at the top mounting flange, same as every other mount
+# position in this file, pending the user's own GUI check).
 # No /Factory prefix: mefron.py opens mefron.usd directly, one level shallower than build_scene_mefron.py's reference.
-MOUNT_PLATE_PRIM_PATH = "/World/sektion_cabinet_instanceable"
-MOUNT_POSITION = [2.74097, -4.782, 0.7924]
+MOUNT_PLATE_PRIM_PATH = "/World/ur10_mount"
+MOUNT_POSITION = [2.625260866887235, -4.7019853821770115, 0.8093334035921127]
 MOUNT_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 FRANKA_URDF_RELATIVE_PATH = "robot/franka_description/franka_panda.urdf"
@@ -30,11 +35,25 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 # (which would add scan time for no benefit). Includes both robots' own prim paths so each arm's
 # cuRobo world treats the OTHER arm as a real collision obstacle -- teleop.get_obstacles() excludes
 # an arm from its own obstacle world via ignore_substring, not by leaving it out of this list.
+# packing_table/packing_table_01 (the previous entries here) no longer exist on the stage -- the
+# packing table was replaced by a conveyor line (assets/mefron/factory floor/Conveyors/), and both
+# mount pedestals are included below since they now sit close enough together (~0.65m apart) that
+# each arm needs to see the OTHER arm's own pedestal as an obstacle, not just the other arm itself.
+# Deliberately NOT including the new ConveyorBelt_*/container_h20 prims here: confirmed live that
+# adding them (even just the 5 conveyor + 4 container top-level Xforms) made
+# get_obstacles_from_stage()'s mesh-collision-world construction (past "Creating new Mesh cache: 95"
+# -- cuRobo recurses each Xform into every child mesh, so 9 top-level prims expanded into ~95
+# individual meshes) hang for over an hour with zero forward progress and steady CPU/GPU load --
+# real industrial conveyor-line CAD assemblies (rollers, frame, guards, motor housing, etc., see
+# the 13-113MB per-file sizes under Conveyors/) are far more geometrically complex than the single
+# packing_table prop they replaced, well past what cuRobo's mesh-based collision checker can
+# preprocess in reasonable time. Getting conveyor/container collision-awareness working needs
+# either primitive/cuboid obstacle approximations instead of the raw CAD meshes, or narrowing to
+# specific lightweight sub-prims -- not attempted here; see CLAUDE.md's open-issues list.
 OBSTACLE_PRIM_PATHS = [
-    "/World/packing_table",
-    "/World/packing_table_01",
     "/World/main_holder_jig",
-    MOUNT_PLATE_PRIM_PATH,
+    MOUNT_PLATE_PRIM_PATH,  # /World/ur10_mount -- arm 1's own pedestal
+    "/World/ur10_mount_01",  # arm 2's own pedestal
     ROBOT_PRIM_PATH,
     "/World/Franka2",  # must match ROBOT_2_PRIM_PATH below (defined later in this file)
 ]
@@ -165,13 +184,16 @@ ASSEMBLY_RELATIONSHIPS = {
 }
 
 # --- Second arm (see docs/mefron-history.md / the "second arm" plan) -------------------------
-# `/World/sektion_cabinet_instanceable_01` is a second SEKTION cabinet the user placed by hand in
-# the GUI for a second Franka to stand on. MOUNT_2_POSITION/MOUNT_2_ORIENTATION_WXYZ are the
-# user-confirmed live pose (Property panel: Translate [3.81539, -4.19785, 0.7924], Orient
-# [0, 0, 180] degrees -- 180 deg about Z is wxyz [0, 0, 0, 1]), replacing an earlier first-pass
-# plate-offset guess.
+# `/World/ur10_mount_01` is the second UR10 mount pedestal the user placed by hand in the GUI for
+# the second Franka to stand on -- replaced an earlier second SEKTION cabinet
+# (`sektion_cabinet_instanceable_01`, still present on the stage but now ~2m away, out of reach)
+# once the packing table became a conveyor line. MOUNT_2_POSITION is taken directly from this
+# prim's own authored xformOp:translate, same first-pass caveat as MOUNT_POSITION above.
+# MOUNT_2_ORIENTATION_WXYZ keeps the previously-confirmed 180deg-about-Z orientation
+# (wxyz [0, 0, 0, 1]) as a starting point -- unrelated to the mount swap, still pending the user's
+# own GUI check like every other pose constant here.
 ROBOT_2_PRIM_PATH = "/World/Franka2"
-MOUNT_2_POSITION = [3.81539, -4.19785, 0.7924]
+MOUNT_2_POSITION = [3.796979317755996, -4.7095468668675435, 0.78]
 MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_2_PRIM_PATH = "/World/target2"
 

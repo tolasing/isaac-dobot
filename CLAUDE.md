@@ -52,8 +52,10 @@ on real hardware.
 
 `scripts/mefron.py` is the live script, now a thin entry point over
 `scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
-`assets/mefron/`'s SEKTION-cabinet mount plate (world position
-`[2.74097, -4.782, 0.7924]`), runs a drag-follow teleop loop, and provides
+`assets/mefron/`'s `ur10_mount` pedestal (world position
+`[2.625260866887235, -4.7019853821770115, 0.8093334035921127]` -- replaced the original SEKTION-cabinet
+mount plate once the packing table was swapped for a conveyor line; arm 2 mounts on the
+paired `ur10_mount_01` pedestal the same way), runs a drag-follow teleop loop, and provides
 one grasp key per `config.GRASP_TARGETS` entry (J: `finger_print_scanner`,
 B: `backpanel_support`, via NVIDIA Grasp Editor-exported poses) plus P(lace),
 all snapping the teleop target to a live-computed pose, plus C/O keys for
@@ -103,6 +105,17 @@ Current constants (`scripts/mefron_lib/config.py`):
   *default* widths a fresh `GripperKeyboardControl` starts with, before any
   grasp key has been pressed — each grasp key overrides them for the rest
   of the run via `set_grasp_widths()`.
+- `OBSTACLE_PRIM_PATHS`: no longer references `packing_table`/
+  `packing_table_01` (removed from the scene when it became a conveyor
+  line) — now includes both `ur10_mount`/`ur10_mount_01` pedestals instead,
+  so each arm treats the other arm's own pedestal as an obstacle too (they
+  now sit only ~0.65m apart). Does **not** yet include the new conveyor
+  belt/container prims — confirmed live that adding them made cuRobo's
+  mesh-collision-world construction hang for over an hour with zero
+  progress (each top-level `ConveyorBelt_*` Xform recurses into dozens of
+  child meshes; real conveyor-line CAD assemblies are far more complex than
+  the single `packing_table` prop they replaced). See "Currently open
+  issues" below.
 
 Currently open issues (see the linked docs for full diagnosis):
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
@@ -128,6 +141,25 @@ Currently open issues (see the linked docs for full diagnosis):
 - `main_holder`'s convex-decomposition collision tuning (fixes sinking +
   lost mounting studs) is researched but not yet applied/saved to
   `mefron.usd` — see `docs/mefron-history.md`.
+- **Conveyor line has no collision awareness yet.** The new
+  `ConveyorBelt_*`/`container_h20*` prims (added when the packing table
+  became a conveyor line) are deliberately left out of
+  `OBSTACLE_PRIM_PATHS` — confirmed live 2026-07-18 that including even
+  just the 5 conveyor + 4 container top-level Xforms made
+  `get_obstacles_from_stage()`'s mesh-collision-world construction hang
+  (past its own "Creating new Mesh cache: 95" log line) for over an hour
+  with zero forward progress, steady CPU/GPU load, and no crash/OOM to
+  even signal failure -- had to be killed. Each top-level Xform recurses
+  into every child mesh (9 prims -> ~95 individual meshes), and real
+  conveyor-line CAD assemblies (rollers, frame, guards, motor housing --
+  see the 13-113MB per-file sizes under `Conveyors/`) are far more
+  geometrically complex than the single `packing_table` prop they
+  replaced -- well past what cuRobo's mesh-based collision checker can
+  preprocess in reasonable time. Next attempt should use primitive/cuboid
+  obstacle approximations instead of the raw CAD meshes (cuRobo's
+  `WorldConfig` supports cuboid obstacles directly), or narrow to specific
+  lightweight sub-prims rather than whole assemblies -- not the raw
+  top-level Xforms.
 
 ## Must-know gotchas
 
