@@ -138,6 +138,7 @@ def main() -> None:
             "suction_approach_relationship": "suction_gripper_approach_on_screen",
             "assembly_control": assembly_placement_control,
             "assembly_relationship": "screen_on_main_holder",
+            "surface_gripper_control": surface_gripper_control,
         },
     ]
     teleop.run_teleop_loop(simulation_app, arms)

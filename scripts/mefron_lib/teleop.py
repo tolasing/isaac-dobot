@@ -218,7 +218,10 @@ class SurfaceGripperKeyboardControl:
     """Fires close_gripper()/open_gripper() once per keypress via the real Surface Gripper runtime
     interface (isaacsim.robot.surface_gripper). No per-frame state machine needed here -- unlike
     GripperKeyboardControl's ramped open/close, the extension's own SurfaceGripperManager (C++) owns
-    the Open/Closing/Closed/retry state machine; Python only needs to request a transition once."""
+    the Open/Closing/Closed/retry state machine; Python only needs to request a transition once.
+    is_closed() reads that same manager-owned state back (via get_gripper_status(), not anything
+    tracked locally), for callers that need to know whether something is actually gripped right now
+    -- see _step_arm()'s assembly_control gating for why that distinction matters."""
 
     def __init__(self, gripper_prim_path: str) -> None:
         import isaacsim.robot.surface_gripper._surface_gripper as surface_gripper
@@ -231,6 +234,12 @@ class SurfaceGripperKeyboardControl:
 
     def open(self) -> None:
         self._interface.open_gripper(self.gripper_prim_path)
+
+    def is_closed(self) -> bool:
+        import isaacsim.robot.surface_gripper._surface_gripper as surface_gripper
+
+        status = self._interface.get_gripper_status(self.gripper_prim_path)
+        return surface_gripper.GripperStatus(status) == surface_gripper.GripperStatus.Closed
 
 
 def build_surface_gripper_keyboard_control(
@@ -548,9 +557,15 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         and state["cmd_plan"] is None
     ):
         assembly_control.consume_placement_request()
-        cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
-            state, target, ee_link_prim_path, arm["assembly_relationship"]
-        )
+        surface_gripper_control = arm.get("surface_gripper_control")
+        # Same "discard the stale request" shape as arm 1's last_grasped_object is None branch
+        # above: without this, arm 2 swings toward the screen's mount pose on every P press even
+        # when it never actually attached to the screen (N/V), since this snap was previously
+        # unconditional.
+        if surface_gripper_control is None or surface_gripper_control.is_closed():
+            cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
+                state, target, ee_link_prim_path, arm["assembly_relationship"]
+            )
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
