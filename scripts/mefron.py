@@ -73,6 +73,12 @@ def main() -> None:
     robot.attach_suction_gripper(config.ROBOT_2_PRIM_PATH)
     surface_gripper_path = robot.attach_surface_gripper_physics(config.ROBOT_2_PRIM_PATH)
 
+    # Arm 3 is a screwdriver arm -- no parallel-jaw fingers, so no friction/drive tuning for them
+    # either. See robot.remove_parallel_jaw_gripper()/attach_suction_gripper()'s own docstrings.
+    robot.remove_parallel_jaw_gripper(config.ROBOT_3_PRIM_PATH)
+    robot.hide_hand_housing(config.ROBOT_3_PRIM_PATH)
+
+
     if not _headless:
         kit_experience.enable_full_experience_extensions()
 
@@ -92,7 +98,7 @@ def main() -> None:
 
     print("[mefron] warming up cuRobo motion_gen for arm 3...", flush=True)
     motion_gen_3, robot_cfg_3 = teleop.setup_motion_gen(
-        config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH
+        config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH,has_parallel_jaw_gripper=False
     )
     print("[mefron] arm 3 curobo motion_gen: READY", flush=True)
 

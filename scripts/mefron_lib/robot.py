@@ -241,13 +241,32 @@ def hide_hand_housing(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     Its collisions sub-scope is left active on purpose: config.OBSTACLE_PRIM_PATHS includes each arm's
     own root path so cuRobo treats the OTHER arm as a real collision obstacle -- dropping panda_hand's
     collision geometry would make arm 1's planner stop seeing it there at all, which is a physics-
-    behavior change, not the purely visual fix this function is for."""
+    behavior change, not the purely visual fix this function is for.
+
+    The URDF importer makes imported mesh geometry instanceable by default -- since every arm imports
+    the identical franka_panda.urdf, panda_hand/visuals across all three Frankas can end up sharing
+    one native-instancing prototype. Authoring visibility directly on an instance-proxy prim isn't a
+    real per-instance override in that case; walking up to the nearest instance root and setting
+    SetInstanceable(False) un-shares that ONE arm's subtree from the prototype first, so the
+    MakeInvisible() below only affects this prim_path's own Franka, not the others."""
     stage = omni.usd.get_context().get_stage()
     visuals_path = f"{prim_path}/panda_hand/visuals"
     prim = stage.GetPrimAtPath(visuals_path)
     if not prim.IsValid():
         print(f"[mefron_lib] WARNING: {visuals_path} not found -- skipping hide.", flush=True)
         return
+
+    ancestor = prim
+    while ancestor.IsValid():
+        if ancestor.IsInstance():
+            print(
+                f"[mefron_lib] {visuals_path}: un-instancing shared prototype at {ancestor.GetPath()} before hiding.",
+                flush=True,
+            )
+            ancestor.SetInstanceable(False)
+            break
+        ancestor = ancestor.GetParent()
+
     UsdGeom.Imageable(prim).MakeInvisible()
 
 
