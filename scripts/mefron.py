@@ -74,9 +74,10 @@ def main() -> None:
     surface_gripper_path = robot.attach_surface_gripper_physics(config.ROBOT_2_PRIM_PATH)
 
     # Arm 3 is a screwdriver arm -- no parallel-jaw fingers, so no friction/drive tuning for them
-    # either. See robot.remove_parallel_jaw_gripper()/attach_suction_gripper()'s own docstrings.
+    # either. See robot.remove_parallel_jaw_gripper()/attach_screwdriver_gripper()'s own docstrings.
     robot.remove_parallel_jaw_gripper(config.ROBOT_3_PRIM_PATH)
     robot.hide_hand_housing(config.ROBOT_3_PRIM_PATH)
+    robot.attach_screwdriver_gripper(config.ROBOT_3_PRIM_PATH)
 
 
     if not _headless:

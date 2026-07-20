@@ -319,6 +319,49 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
             UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
 
 
+def attach_screwdriver_gripper(prim_path: str = config.ROBOT_3_PRIM_PATH) -> None:
+    """References config.SCREWDRIVER_USD as a child of prim_path's panda_hand -- cuRobo's franka.yml
+    ee_link, the same frame grasp.py's poses are already expressed in, so the tool rides along
+    rigidly with the hand. Does not remove/hide the Franka's own hand -- callers converting an arm to
+    screwdriver-only should also call remove_parallel_jaw_gripper()/hide_hand_housing() first (see
+    mefron.py). No screw-driving control is wired up yet -- this only mounts the tool visually/for
+    collision. Positioned at config.SCREWDRIVER_LOCAL_POSITION/ORIENTATION_WXYZ (the latter derived
+    from the user's live-jogged GUI pose -- see that constant's own comment) and scaled to
+    config.SCREWDRIVER_LOCAL_SCALE, overriding whatever scale this reference would otherwise compose
+    with (see that constant's own comment for the 0.001-scale asset issue this works around).
+
+    Disables any baked-in CollisionAPI/RigidBodyAPI on the referenced mesh the same way
+    attach_suction_gripper() does for its own SolidWorks-exported flange -- confirmed live for that
+    asset that a baked-in collider/rigid body silently breaks raycasts and logs a PhysX
+    "missing xformstack reset" hierarchy warning; not yet separately confirmed for this screwdriver
+    asset, but disabling unconditionally here is a no-op if it turns out clean, so left in as the
+    same defensive default pending its own live check."""
+    from isaacsim.core.utils.stage import add_reference_to_stage
+
+    tool_prim_path = f"{prim_path}/panda_hand/{config.SCREWDRIVER_PRIM_NAME}"
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(tool_prim_path).IsValid():
+        # Same re-run safety as mount_franka() above -- avoid a uniquified duplicate on a second run
+        # in the same session.
+        omni.kit.commands.execute("DeletePrims", paths=[tool_prim_path])
+        omni.kit.app.get_app().update()
+
+    add_reference_to_stage(usd_path=str(config.SCREWDRIVER_USD), prim_path=tool_prim_path)
+    xform = SingleXFormPrim(prim_path=tool_prim_path)
+    xform.set_local_scale(np.array(config.SCREWDRIVER_LOCAL_SCALE))
+    xform.set_local_pose(
+        translation=np.array(config.SCREWDRIVER_LOCAL_POSITION),
+        orientation=np.array(config.SCREWDRIVER_LOCAL_ORIENTATION_WXYZ),
+    )
+
+    tool_prim = stage.GetPrimAtPath(tool_prim_path)
+    for prim in Usd.PrimRange(tool_prim):
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
+
+
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
     prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by

@@ -217,6 +217,19 @@ SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
 SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
+# Electric-screwdriver end-effector, added onto arm 3 only. Same panda_hand-child mounting pattern as
+# SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
+SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver.usd"
+SCREWDRIVER_PRIM_NAME = "electric_screwdriver"
+# The asset's own root Xform is correctly scaled (0.001) inside electric_screwdriver.usd itself now --
+# this forces attach_screwdriver_gripper()'s own reference-holding wrapper prim to identity scale so
+# nothing in robot.py compounds an extra scale factor on top of that.
+SCREWDRIVER_LOCAL_SCALE = [1.0, 1.0, 1.0]
+SCREWDRIVER_LOCAL_POSITION = [0.0, 0.0, 0.0]
+# Derived from the user's live-jogged GUI pose (Orient X/Y/Z = 90/45/90 degrees, USD's rotateXYZ
+# convention: composed as Rx * Ry * Rz, i.e. Z applied first, then Y, then X), converted to wxyz.
+SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501, 0.6532814824]
+
 # Real isaacsim.robot.schema/isaacsim.robot.surface_gripper physics, distinct from the SUCTION_GRIPPER_*
 # constants above (which are pure visual geometry with zero physics of its own). Kept deliberately
 # minimal -- no hand-authored PhysicsLimitAPI/PhysicsDriveAPI compliance tuning, no touching any other
