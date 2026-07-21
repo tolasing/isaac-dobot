@@ -74,6 +74,20 @@ class GripperKeyboardControl:
         self._grasp_approach_object_requested = None
         return requested
 
+    def reset(self) -> None:
+        """Called on every fresh Play (see run_teleop_loop()), same reasoning/pattern as
+        ConveyorControl.reset(): this object is built once in mefron.py's setup, outside the
+        per-Play arm["_state"] rebuild, so closed/last_grasped_object would otherwise silently
+        survive a Stop even though the actual gripper and part have both reset to their pre-Play
+        state. Without this, P can fire arm 1's placement snap on a fresh Play using a stale
+        last_grasped_object from a previous session (see _step_arm()'s P-handling gate, which also
+        now checks `closed` for the same reason within a single session -- e.g. grasp then O without
+        ever placing)."""
+        self.closed = False
+        self.last_grasped_object = None
+        self._assembly_target_requested = False
+        self._grasp_approach_object_requested = None
+
 
 def build_gripper_keyboard_control(
     close_key: str = "C",
@@ -631,18 +645,25 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 gripper_control.consume_assembly_target_request()
             elif state["cmd_plan"] is None:
                 gripper_control.consume_assembly_target_request()
-                object_name = gripper_control.last_grasped_object
-                # Looked up by part_prim_path rather than assuming a "{object_name}_on_main_holder"
-                # key -- not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
-                part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
-                relationship_name = next(
-                    name
-                    for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
-                    if relationship["part_prim_path"] == part_prim_path
-                )
-                cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
-                    state, target, ee_link_prim_path, relationship_name
-                )
+                # Same "actually holding it right now" gate as arm 2's surface_gripper_control.is_closed()
+                # check below (see a19b672) -- last_grasped_object is sticky (set once by J/B/K, never
+                # cleared by O), so without this a press of O then P still fires the placement snap for
+                # whatever was last grasped, and a stale last_grasped_object surviving a Stop/Play cycle
+                # (this control object isn't rebuilt by _fresh_arm_state(), see reset()) does the same on
+                # a fresh Play with nothing actually held.
+                if gripper_control.closed:
+                    object_name = gripper_control.last_grasped_object
+                    # Looked up by part_prim_path rather than assuming a "{object_name}_on_main_holder"
+                    # key -- not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
+                    part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
+                    relationship_name = next(
+                        name
+                        for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
+                        if relationship["part_prim_path"] == part_prim_path
+                    )
+                    cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
+                        state, target, ee_link_prim_path, relationship_name
+                    )
         else:
             requested_object = gripper_control.consume_grasp_approach_from_file_request()
             if requested_object is not None:
@@ -836,6 +857,9 @@ def run_teleop_loop(
             # Fresh Play (first ever, or after a Stop) -- rebuild everything bound to the previous physics view.
             for arm in arms:
                 arm["_state"] = _fresh_arm_state()
+                gripper_control = arm.get("gripper_control")
+                if gripper_control is not None:
+                    gripper_control.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
             step_index = 0

@@ -136,7 +136,7 @@ ASSEMBLY_RELATIONSHIPS = {
     "backpanel_support_on_main_holder": {
         "part_prim_path": "/World/backpanel_support",
         "mount_prim_path": "/World/main_holder",
-        "local_position": [0.023463946069672652, -0.013916167562435, 0.006499950486007643],
+        "local_position": [0.023463946069672652, -0.013916167562435, 0.001499950486007643],
         "local_orientation_wxyz": [
             1.146981958298904e-07,
             0.9999999999991531,
