@@ -34,6 +34,15 @@ def main() -> None:
     # Ensures Play actually creates a PhysX simulation view -- otherwise this is a GUI toggle that's
     # easy to have off, in which case is_playing() lies and SingleArticulation.initialize() never gets a real view.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
+    # Decouples physics stepping from real elapsed wall-clock time between simulation_app.update()
+    # calls -- without this, a heavier per-frame Python cost (3 arms' worth of cuRobo planning here,
+    # vs. near-zero in a lightweight demo like the standalone Conveyor Builder scene) makes physics
+    # take bigger/bunched-up catch-up steps to keep pace with real time, which destabilizes
+    # friction-coupled mechanisms like ConveyorBelt_A24's PhysxSurfaceVelocityAPI (confirmed live
+    # 2026-07-21: identical belt/jig/friction setup was smooth in the Conveyor Builder demo but
+    # vibrated/rotated under mefron.py's own heavier loop). Forces every update() call to advance
+    # physics by exactly one fixed-size step regardless of how long the Python code took.
+    carb.settings.get_settings().set_bool("/app/player/useFixedTimeStepping", True)
 
     # Must run BEFORE open_stage(): mefron.usd has a persisted, broken /panda prim reference, and
     # resolving it against stale files caches an Sdf.Layer that later crashes mount_franka()'s import ("a layer already exists").

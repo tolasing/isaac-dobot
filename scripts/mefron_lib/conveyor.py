@@ -200,7 +200,18 @@ class ConveyorControl:
         attr.Set(float(value))
 
     def _jig_world_y(self) -> float:
-        xform = SingleXFormPrim(prim_path=config.MAIN_HOLDER_JIG_PRIM_PATH)
+        # reset_xform_properties=False is required here -- main_holder_jig's xformOpOrder is
+        # [translate, orient, scale, scale:unitsResolve] (that last op compensates the source
+        # asset's metersPerUnit=0.001 down to this stage's meters), but SingleXFormPrim's default
+        # (reset_xform_properties=True) forces every prim it wraps down to exactly
+        # [translate, orient, scale] "post-init" -- silently stripping unitsResolve. Since this
+        # constructs fresh every frame during transit (matching this codebase's Stop/Play-safety
+        # convention of never caching PhysX/Fabric-backed handles across a Stop), leaving the
+        # default on was re-stripping that op every single frame while the belt moved, violently
+        # disrupting the jig's effective scale/transform each step -- confirmed live 2026-07-21 as
+        # the actual cause of the conveyor vibration/rotation (a manual edit of the graph's own
+        # Velocity variable, which never touches SingleXFormPrim, moved the same jig smoothly).
+        xform = SingleXFormPrim(prim_path=config.MAIN_HOLDER_JIG_PRIM_PATH, reset_xform_properties=False)
         position, _ = xform.get_world_pose()
         return float(position[1])
 
