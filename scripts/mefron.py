@@ -27,7 +27,7 @@ preload_real_packaging()
 import carb.settings  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from mefron_lib import config, kit_experience, robot, teleop  # noqa: E402
+from mefron_lib import config, conveyor, kit_experience, robot, teleop  # noqa: E402
 
 
 def main() -> None:
@@ -146,7 +146,8 @@ def main() -> None:
         "P to place on main_holder.",
         flush=True,
     )
-    conveyor_control = teleop.build_conveyor_control()
+    conveyor.setup_conveyor_belt_graph()
+    conveyor_control = conveyor.build_conveyor_control()
     print(
         f"[mefron] Conveyor: press {config.CONVEYOR_TOGGLE_KEY} to send main_holder_jig forward to "
         f"Y={config.CONVEYOR_JIG_FORWARD_Y}, press again to send it back to Y={config.CONVEYOR_JIG_BACKWARD_Y}.",

@@ -198,21 +198,38 @@ MOUNT_3_POSITION = [3.85262, -3.55485, 0.78]
 MOUNT_3_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_3_PRIM_PATH = "/World/target3"
 
-# ConveyorBelt_A24. Driven directly by teleop.ConveyorControl via PhysX's own
-# PhysxSurfaceVelocityAPI/surfaceVelocity attribute on CONVEYOR_BELT_PRIM_PATH -- NOT through an
-# OmniGraph/IsaacConveyor node. That was tried first (Create > Isaac Sim > Conveyor); abandoned
-# 2026-07-20 after repeated live-confirmed failures: the node's own "Enabled" input ended up
-# unchecked (silently means the node never computes at all), and separately, deleting the graph
-# entirely left a nonzero surfaceVelocity value permanently orphaned on Belt's own USD spec, since
-# that attribute is authored directly on the rigid body and isn't cleared by removing whatever
-# graph/node used to drive it -- only removing the PhysxSurfaceVelocityAPI schema itself stopped
-# PhysX from continuing to apply it. Driving the attribute directly from this one Python class avoids
-# all of that: nothing is hand-authored in mefron.usd for it to depend on.
+# ConveyorBelt_A24. Driven by conveyor.ConveyorControl through Isaac Sim's own
+# isaacsim.asset.gen.conveyor OmniGraph node (CreateConveyorBelt command), built once at startup by
+# conveyor.setup_conveyor_belt_graph(). This exact OmniGraph route was tried once before (Create >
+# Isaac Sim > Conveyor) and abandoned 2026-07-20 after two live-confirmed failures: the node's own
+# "Enabled" input ended up unchecked (silently means the node never computes at all), and separately,
+# deleting the graph left a nonzero surfaceVelocity value permanently orphaned on Belt's own USD spec
+# (that attribute is authored directly on the rigid body, not cleared by removing the graph/node that
+# drove it). The session fell back to driving PhysxSurfaceVelocityAPI directly instead, which worked
+# but felt like bypassing "the right way" to do it -- this retry engineers around both failures rather
+# than repeating them: setup_conveyor_belt_graph() explicitly forces the node's inputs:enabled to True
+# and reads it back (never trusts the default), and deletes any stray graph at
+# CONVEYOR_ACTION_GRAPH_PATH plus re-zeros the belt's surfaceVelocity directly before rebuilding, so a
+# leftover orphaned value from a prior run's graph can never survive into a fresh one. Note the native
+# node is not a different physics mechanism than the direct-write fallback -- its own changelog
+# confirms it writes to the same PhysxSurfaceVelocityAPI attribute, just wrapped in an ActionGraph
+# (OnPlaybackTick -> IsaacConveyor node) for authoring convenience.
 CONVEYOR_BELT_PRIM_PATH = "/World/ConveyorBelt_A24/Belt"
-# Local-frame direction (Belt's own axes, not world) confirmed live 2026-07-20 to move the belt
-# forward at this magnitude -- re-verify once ConveyorControl is actually driving it, though: this
-# axis flipped between local X and Y more than once across earlier graph deletions/recreations, so
-# treat this as a starting point, not a settled fact.
+# Path CreateConveyorBelt creates the ActionGraph at (prim_name under CONVEYOR_BELT_PRIM_PATH's
+# parent) -- kept deterministic on purpose so setup_conveyor_belt_graph() can find and delete a stray
+# survivor from a previous run before rebuilding, rather than letting the command auto-uniquify to a
+# new name every time.
+CONVEYOR_ACTION_GRAPH_PRIM_NAME = "ConveyorBeltGraph"
+CONVEYOR_ACTION_GRAPH_PATH = "/World/ConveyorBelt_A24/ConveyorBeltGraph"
+# Graph variable CreateConveyorBelt wires its ReadVariable node's output into the IsaacConveyor node's
+# inputs:velocity -- so ConveyorControl must set this variable, not the node's inputs:velocity
+# directly (that gets overwritten every tick by the ReadVariable node).
+CONVEYOR_VELOCITY_VARIABLE_NAME = "Velocity"
+# Local-frame direction (Belt's own axes, not world), set once as the IsaacConveyor node's fixed
+# inputs:direction by setup_conveyor_belt_graph() -- confirmed live 2026-07-20 to move the belt
+# forward at this magnitude under the old direct-PhysX approach; re-verify now that the OmniGraph
+# node is driving it, though: this axis flipped between local X and Y more than once across earlier
+# graph deletions/recreations, so treat this as a starting point, not a settled fact.
 CONVEYOR_LOCAL_VELOCITY_DIRECTION = [1.0, 0.0, 0.0]
 CONVEYOR_SPEED = 1.0
 MAIN_HOLDER_JIG_PRIM_PATH = "/World/main_holder_jig"
@@ -294,11 +311,10 @@ SCREEN_PRIM_PATH = "/World/screen"
 # robot.mount_franka()'s own docstring and kit_experience.enable_full_experience_extensions().
 #
 # isaacsim.asset.gen.conveyor/.ui are the one deliberate addition beyond that diffed set -- neither is
-# a dependency of either experience. Not required by teleop.ConveyorControl itself anymore (that
-# class now drives ConveyorBelt_A24's PhysxSurfaceVelocityAPI directly, see
-# CONVEYOR_BELT_PRIM_PATH's own comment for why the OmniGraph/IsaacConveyor node approach was
-# abandoned), but kept here since .ui's "Create > Isaac Sim > Conveyor" menu command is still useful
-# for building any of the other ConveyorBelt_A01-A49 assets the same way.
+# a dependency of either experience. isaacsim.asset.gen.conveyor (non-UI) is required again:
+# conveyor.setup_conveyor_belt_graph() calls its CreateConveyorBelt command directly, see
+# CONVEYOR_BELT_PRIM_PATH's own comment for the history. .ui is kept since its "Create > Isaac Sim >
+# Conveyor" menu command is still useful for building any of the other ConveyorBelt_A01-A49 assets.
 FULL_EXPERIENCE_EXTRA_EXTENSIONS = [
     "isaacsim.app.setup",
     "isaacsim.asset.gen.conveyor",
