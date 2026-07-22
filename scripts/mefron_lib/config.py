@@ -51,7 +51,7 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 # either primitive/cuboid obstacle approximations instead of the raw CAD meshes, or narrowing to
 # specific lightweight sub-prims -- not attempted here; see CLAUDE.md's open-issues list.
 OBSTACLE_PRIM_PATHS = [
-    "/World/main_holder_jig",  # must match ROBOT_2_PRIM_PATH below (defined later in this file)
+    "/World/main_holder_jig",
 ]
 
 # Loop-timing constants for teleop.run_teleop_loop(), ported from build_scene.py.
@@ -73,6 +73,18 @@ _ROBOT_INIT_SETTLE_FRAMES = 5
 # Uniformly re-times the already-planned trajectory to play out slower; does not change the
 # optimizer's relative speed profile or planning success. See _TELEOP_VELOCITY_SCALE for capping actual limits.
 _TELEOP_TIME_DILATION_FACTOR = 0.3
+
+# Tried forcing MotionGenPlanConfig's use_start_state_as_retract to False here (regularize IK's
+# null-space/redundant-branch choice toward robot_cfg's fixed retract_config instead of the arm's
+# current joint state), on the theory that it would stop the gripper twisting in place when K
+# (pcb_assembly) is pressed right after a B (backpanel_support) grasp+place cycle leaves the arm far
+# from retract_config. Confirmed live 2026-07-22 this made things WORSE -- with the current state no
+# longer the regularization reference, EVERY part's grasp/approach after B now got pulled toward
+# whichever branch is nearest retract_config regardless of how far the arm currently was from it,
+# instead of just occasionally diverging for specific target/current-pose pairs like before. Reverted
+# (teleop.py's MotionGenPlanConfig(...) call no longer references this). Left here as a record of a
+# ruled-out fix, not a lead to retry -- see CLAUDE.md's currently-open-issues list for this bug.
+# _TELEOP_USE_START_STATE_AS_RETRACT = False
 
 # Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <= 0.25 as a
 # special case: it swaps in finetune_trajopt_slow.yml and raises maximum_trajectory_dt to compensate; 0.2 stays under that threshold.
@@ -115,12 +127,12 @@ GRASP_TARGETS = {
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
     },
-    "pcb_assembly": {
-        "key": "K",
-        "yaml_path": REPO_ROOT / "assets" / "PCB_assembly.yaml",
-        "grasp_name": "grasp_0",
-        "part_prim_path": "/World/PCB_Assembly_color_fixed",
-    },
+    # pcb_assembly (K, parallel-jaw grasp of PCB_Assembly_color_fixed) retired 2026-07-22 in favor of
+    # arm 2's suction cup instead (see SUCTION_TARGETS below) -- K's grasp-approach, reached from
+    # certain prior arm poses (confirmed live: after B then P), landed on a different redundant
+    # self-motion branch than reaching it fresh did, visibly twisting the wrist/gripper in place even
+    # though the target pose itself was correct. Root cause not resolved (see CLAUDE.md's
+    # currently-open-issues list); switching end effectors sidesteps it rather than fixing it.
 }
 
 # T_H_S: finger_print_scanner's / backpanel_support's pose expressed in main_holder's own local frame
@@ -176,6 +188,17 @@ ASSEMBLY_RELATIONSHIPS = {
         "mount_prim_path": "/World/screen",
         "local_position": [0.00028, -0.00024, -0.11558],
         "local_orientation_wxyz": [0.382330, -0.000471, -0.000099, 0.924026],
+    },
+    # Derived live 2026-07-22 by hand-placing the suction gripper (target2) against
+    # PCB_Assembly_color_fixed in the GUI, then reading back target2-wrt-part via
+    # grasp.compute_relative_pose() -- same methodology as suction_gripper_approach_on_screen above.
+    # First-pass Z (0.10492) let V report attached but not actually lift the part; this Z (~1cm
+    # further out) confirmed live to grip and lift cleanly.
+    "suction_gripper_approach_on_pcb_assembly": {
+        "part_prim_path": "/World/PCB_Assembly_color_fixed",
+        "mount_prim_path": "/World/PCB_Assembly_color_fixed",
+        "local_position": [-0.0028148316864434492, 4.480405335696105e-06, 0.11491755932216695],
+        "local_orientation_wxyz": [0.011293781372283615, 0.38247333692520136, 0.9238856699972284, 0.004676089968013461],
     },
 }
 
@@ -300,13 +323,33 @@ SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
 # alone does nothing: re-bake the relationship's z too.
 SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
 
-# Arm 2 keys -- none collide with arm 1's J/B/K/P/C/O or dormant mefron2.py's G. S, H, and R were
+# Arm 2 keys -- none collide with arm 1's J/B/P/C/O or dormant mefron2.py's G. S, H, and R were
 # all tried first (approach/screen and release, respectively) and confirmed live 2026-07-17 to
 # double as Kit's own viewport hotkeys, firing that Kit UI/action alongside our handler -- N and L
-# instead, neither a Kit viewport manipulator hotkey.
-SUCTION_APPROACH_KEY = "N"  # sNap arm 2's target to the screen-approach pose
+# instead, neither a Kit viewport manipulator hotkey. M added alongside N once arm 1's K
+# (parallel-jaw grasp of pcb_assembly) was retired in favor of arm 2's suction cup -- see
+# SUCTION_TARGETS below.
 SUCTION_ATTACH_KEY = "V"  # Vacuum on
 SUCTION_DETACH_KEY = "L"  # reLease
+
+# Arm 2's per-object suction approach targets -- same shape/purpose as GRASP_TARGETS above but for
+# the suction cup instead of the parallel-jaw yaml grasps: "key" snaps target2 to
+# approach_relationship (an ASSEMBLY_RELATIONSHIPS entry, hand-derived the same way as
+# suction_gripper_approach_on_screen -- see docs/grasp-and-assembly-offsets.md), and P looks up
+# assembly_relationship for whichever object teleop.SuctionApproachControl last had an approach
+# request for (mirrors GripperKeyboardControl.last_grasped_object's role for arm 1).
+SUCTION_TARGETS = {
+    "screen": {
+        "key": "N",  # sNap arm 2's target to the screen-approach pose
+        "approach_relationship": "suction_gripper_approach_on_screen",
+        "assembly_relationship": "screen_on_main_holder",
+    },
+    "pcb_assembly": {
+        "key": "M",
+        "approach_relationship": "suction_gripper_approach_on_pcb_assembly",
+        "assembly_relationship": "pcb_assembly_on_backpanel_support",
+    },
+}
 
 SCREEN_PRIM_PATH = "/World/screen"
 

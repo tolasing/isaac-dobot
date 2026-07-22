@@ -1,4 +1,4 @@
-"""Headless regression test for mefron_lib's J/K/P one-shot grasp-approach and
+"""Headless regression test for mefron_lib's J/P one-shot grasp-approach and
 assembly-target snap requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py.
 
 Run standalone:
@@ -149,36 +149,14 @@ def main() -> None:
     phase2_delta = float(np.max(np.abs(phase2_positions - phase1_positions)))
     print(f"[test_mefron_assembly_headless] phase 2 (P: assembly target) max joint delta vs phase 1: {phase2_delta:.4f} rad", flush=True)
 
-    # Phase 3: simulate pressing K (grasp-approach for pcb_assembly), continuing from wherever
-    # phase 2 left the robot. Sanity-check the pose math first, same shape as J's own check above.
-    pcb_assembly_target = config.GRASP_TARGETS["pcb_assembly"]
-    pcb_trans, pcb_quat = SingleXFormPrim(prim_path=pcb_assembly_target["part_prim_path"]).get_world_pose()
-    pcb_approach_trans, pcb_approach_quat = grasp.compute_grasp_approach_pose_from_file(
-        pcb_assembly_target["yaml_path"], pcb_assembly_target["grasp_name"]
-    )
-    print(
-        f"[test_mefron_assembly_headless] pcb_assembly world pose: pos={pcb_trans} quat_wxyz={pcb_quat}",
-        flush=True,
-    )
-    print(
-        f"[test_mefron_assembly_headless] K grasp-approach target pose: pos={pcb_approach_trans} quat_wxyz={pcb_approach_quat}",
-        flush=True,
-    )
-    pcb_approach_distance = float(np.linalg.norm(np.array(pcb_approach_trans) - np.array(pcb_trans)))
-    print(f"[test_mefron_assembly_headless] K approach pose is {pcb_approach_distance:.4f} m from pcb_assembly", flush=True)
-    assert pcb_approach_distance < 0.2, "K's grasp-approach pose is implausibly far from pcb_assembly"
-
-    gripper_control.request_grasp_approach_from_file("pcb_assembly")
-    teleop.run_teleop_loop(simulation_app, arms, max_iterations=_MAX_ITERATIONS_PER_PHASE)
-
-    phase3_positions = _joint_positions("verify_robot_phase3", j_names)
-    phase3_delta = float(np.max(np.abs(phase3_positions - phase2_positions)))
-    print(f"[test_mefron_assembly_headless] phase 3 (K: grasp approach) max joint delta vs phase 2: {phase3_delta:.4f} rad", flush=True)
-
-    if phase1_delta < 0.05 or phase2_delta < 0.05 or phase3_delta < 0.05:
+    # Phase 3 (K: grasp-approach for pcb_assembly) removed 2026-07-22 -- K was retired from
+    # config.GRASP_TARGETS in favor of arm 2's suction cup (see config.SUCTION_TARGETS), so
+    # config.GRASP_TARGETS["pcb_assembly"] no longer exists. This test only wires up arm 1, so
+    # there's no equivalent suction-approach phase to substitute here.
+    if phase1_delta < 0.05 or phase2_delta < 0.05:
         print("[test_mefron_assembly_headless] FAIL: robot did not move meaningfully for one or more phases.", flush=True)
     else:
-        print("[test_mefron_assembly_headless] PASS: J (grasp approach), P (assembly target), and K (grasp approach) all drove the robot.", flush=True)
+        print("[test_mefron_assembly_headless] PASS: J (grasp approach) and P (assembly target) both drove the robot.", flush=True)
 
     simulation_app.close()
 

@@ -150,9 +150,10 @@ def main() -> None:
     # P press fires both (see AssemblyPlacementControl's docstring).
     assembly_placement_control = teleop.build_assembly_placement_keyboard_control()
     print(
-        f"[mefron] Arm 2 suction: press {config.SUCTION_APPROACH_KEY} to approach {config.SCREEN_PRIM_PATH}, "
-        f"{config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release, "
-        "P to place on main_holder.",
+        "[mefron] Arm 2 suction: press "
+        + ", ".join(f"{target['key']} to approach {name}" for name, target in config.SUCTION_TARGETS.items())
+        + f", {config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release, "
+        "P to place on main_holder (whichever object was last approached).",
         flush=True,
     )
     conveyor.setup_conveyor_belt_graph()
@@ -186,9 +187,7 @@ def main() -> None:
             "mount_orientation_wxyz": config.MOUNT_2_ORIENTATION_WXYZ,
             "name": "arm2",
             "suction_control": suction_approach_control,
-            "suction_approach_relationship": "suction_gripper_approach_on_screen",
             "assembly_control": assembly_placement_control,
-            "assembly_relationship": "screen_on_main_holder",
             "surface_gripper_control": surface_gripper_control,
         },
         {
