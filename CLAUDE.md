@@ -160,6 +160,56 @@ Currently open issues (see the linked docs for full diagnosis):
   `WorldConfig` supports cuboid obstacles directly), or narrow to specific
   lightweight sub-prims rather than whole assemblies -- not the raw
   top-level Xforms.
+- **Arm 2's suction release (L key) doesn't actually let go.** Pressing L
+  calls `open_gripper()` (the real `isaacsim.robot.surface_gripper` runtime
+  interface), which flips the manager's status to Open, but the object
+  stays physically stuck to the gripper -- the only working fix so far is
+  manually selecting `SurfaceGripperJoint` under `panda_hand` in the Stage
+  panel and unchecking its "Joint Enabled" property by hand every time.
+  Tried scripting that exact toggle (`UsdPhysics.Joint`'s
+  `physics:jointEnabled` attribute, via `GetJointEnabledAttr()`) from
+  `SurfaceGripperKeyboardControl.open()`/`close()` in
+  `scripts/mefron_lib/teleop.py` across three variants, all confirmed live
+  and all reverted:
+  1. `open()` sets `jointEnabled=False` right after `open_gripper()`;
+     `close()` sets it back `True` right before `close_gripper()`. L then
+     released correctly, but switching target objects mid-session (V on
+     `pcb_assembly` right after a prior L+N/M cycle on `screen`) sent the
+     arm violently snapping back toward `screen`'s location.
+  2. Same, but gated re-enabling on `is_closed()` polled once per frame
+     from `_step_arm()` instead of doing it synchronously in `close()`.
+     Deadlocked instead -- V never attached again, apparently because the
+     manager can't reach `Closed` status while its own joint is disabled.
+  3. Re-added `joint.GetBody1Rel().ClearTargets(True)` alongside the
+     jointEnabled toggle (on the theory that a stale `body1` binding to the
+     previous object was the cause of variant 1's snap) -- no change, same
+     violent snap-to-previous-object as variant 1.
+  Root cause per `isaacsim.robot.surface_gripper`'s own shipped headers
+  (`SurfaceGripperManager.h`/`SurfaceGripperComponent.h` --
+  `/isaac-sim/exts/isaacsim.robot.surface_gripper/include/...`): the real
+  C++ `SurfaceGripperManager` tracks gripped objects, attachment points,
+  and per-joint settling counters (`m_settlingDelay = 10` physics steps) in
+  its own memory (`m_writeToUsd` defaults **false** -- it doesn't even
+  sync this back to USD by default) and processes attach/detach as
+  **queued** PhysX/USD actions drained on its own `onPhysicsStep`, not
+  synchronously within the Python call. `SurfaceGripperJoint` is also
+  registered as this manager's own attachment point (`IsaacAttachmentPointAPI`),
+  so it's independently watching that exact prim for USD change
+  notifications. Editing `jointEnabled`/`body1` on it directly from Python
+  races the manager's own deferred queue and its `onComponentChange`
+  listener, producing a different broken symptom each time depending on
+  exactly when the edit lands relative to the manager's own processing --
+  not a bug in the manager, but us fighting its ownership of that prim.
+  Current code is back to plain `open_gripper()`/`close_gripper()` only
+  (matching `isaacsim.robot.manipulators`' own `SurfaceGripper` wrapper and
+  the reference `OgnSurfaceGripper` node -- neither ever touches the joint
+  directly), i.e. **the manual Stage-panel workaround is still required**.
+  Next attempt should look at whether the manual "uncheck" is even doing
+  anything physically real (vs. the elapsed time spent navigating the UI
+  being what actually lets the manager's own retry/settling logic clear
+  itself) before trying to automate it again, or look for a genuine
+  reset/detach entry point in `isaacsim.robot.surface_gripper._surface_gripper`'s
+  interface beyond `open_gripper()`/`close_gripper()`.
 
 ## Must-know gotchas
 
